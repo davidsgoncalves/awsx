@@ -8,6 +8,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
+	"github.com/davidsgoncalves/awsx/internal/config"
 	"github.com/davidsgoncalves/awsx/internal/deps"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 )
@@ -37,7 +38,7 @@ func fakeDeps() Deps {
 			{Name: "AWS CLI", Binary: "aws", Found: true},
 			{Name: "Session Manager Plugin", Binary: "session-manager-plugin", Found: true},
 		},
-		NewClients: func(context.Context, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
 			return fakeIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
 		},
 	}
@@ -78,7 +79,7 @@ func (f fakeLogin) SSOLogin(context.Context) error { *f.called = true; return ni
 func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	called := false
 	d := fakeDeps()
-	d.NewClients = func(context.Context, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
 		return failIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
 	}
 	d.NewCLI = func(string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
@@ -205,6 +206,33 @@ func TestRoot_SSOFlow_NeedLoginGoesToLoginThenRetries(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("expected discoverer init command after login")
+	}
+}
+
+func TestRoot_ProfileWithoutRegionShowsRegionPicker(t *testing.T) {
+	d := fakeDeps()
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+		if region == "" {
+			return nil, nil, nil, "", config.ErrNoRegion
+		}
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, region, nil
+	}
+
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile -> no region -> region picker
+	if m.current != screenRegion {
+		t.Fatalf("current = %v, want screenRegion", m.current)
+	}
+
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // pick first region -> checking
+	if m.current != screenChecking {
+		t.Fatalf("current = %v, want screenChecking", m.current)
+	}
+
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "af-south-1"})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
 	}
 }
 

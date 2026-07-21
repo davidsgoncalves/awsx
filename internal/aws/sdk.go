@@ -21,17 +21,21 @@ type Clients struct {
 	ssm *ssm.Client
 }
 
-// NewClients loads shared config for profile, resolves the region (error if
-// none), and returns typed clients plus the resolved region. It reads the
-// official AWS CLI SSO cache; it never creates credentials.
-func NewClients(ctx context.Context, profile string) (*Clients, string, error) {
+// NewClients loads shared config for profile and returns typed clients plus the
+// resolved region. When regionOverride is non-empty it is used directly;
+// otherwise the region is resolved from the profile/env (config.ErrNoRegion if
+// none). It reads the official AWS CLI SSO cache; it never creates credentials.
+func NewClients(ctx context.Context, profile, regionOverride string) (*Clients, string, error) {
 	cfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithSharedConfigProfile(profile))
 	if err != nil {
 		return nil, "", fmt.Errorf("load profile %q: %w", profile, err)
 	}
-	region, err := config.ResolveRegion(cfg.Region)
-	if err != nil {
-		return nil, "", err
+	region := regionOverride
+	if region == "" {
+		region, err = config.ResolveRegion(cfg.Region)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 	cfg.Region = region
 	return newClientsFromConfig(cfg), region, nil
