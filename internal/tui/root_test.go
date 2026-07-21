@@ -101,6 +101,113 @@ func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	}
 }
 
+type fakeDiscoverer struct{}
+
+func (fakeDiscoverer) Accounts(context.Context) ([]awsx.Account, error) {
+	return []awsx.Account{{ID: "111111111111", Name: "prod"}}, nil
+}
+func (fakeDiscoverer) Roles(context.Context, string) ([]awsx.Role, error) {
+	return []awsx.Role{{Name: "SystemAdministrator"}}, nil
+}
+
+func ssoDeps(cleanup func()) Deps {
+	return Deps{
+		SSOSessions: []profiles.SSOSession{{Name: "vakinha", StartURL: "https://x/start", Region: "us-east-1"}},
+		Checks: []deps.Dependency{
+			{Name: "AWS CLI", Binary: "aws", Found: true},
+			{Name: "Session Manager Plugin", Binary: "session-manager-plugin", Found: true},
+		},
+		NewDiscoverer: func(context.Context, profiles.SSOSession) (awsx.SSODiscoverer, error) {
+			return fakeDiscoverer{}, nil
+		},
+		NewSSOLogin: func(profiles.SSOSession) awsx.Login { return fakeLogin{called: new(bool)} },
+		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.Sessioner, string, func(), error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, nil, "sa-east-1", cleanup, nil
+		},
+	}
+}
+
+func TestRoot_SSOFlow_SessionToMenu(t *testing.T) {
+	cleaned := false
+	m := NewRoot(ssoDeps(func() { cleaned = true }))
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+
+	// select the SSO session (first item) -> discoverer init (checking)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking {
+		t.Fatalf("after session select current = %v, want screenChecking", m.current)
+	}
+	if !m.inSSOFlow {
+		t.Fatal("expected inSSOFlow true")
+	}
+
+	// accounts arrive -> account picker
+	m = drive(m, accountsMsg{accounts: []awsx.Account{{ID: "111111111111", Name: "prod"}}})
+	if m.current != screenAccounts {
+		t.Fatalf("current = %v, want screenAccounts", m.current)
+	}
+
+	// pick account -> roles loading (checking)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking || m.accountID != "111111111111" {
+		t.Fatalf("after account pick current=%v account=%q", m.current, m.accountID)
+	}
+
+	// roles arrive -> role picker
+	m = drive(m, rolesMsg{roles: []awsx.Role{{Name: "SystemAdministrator"}}})
+	if m.current != screenRoles {
+		t.Fatalf("current = %v, want screenRoles", m.current)
+	}
+
+	// pick role -> region picker
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenRegion || m.roleName != "SystemAdministrator" {
+		t.Fatalf("after role pick current=%v role=%q", m.current, m.roleName)
+	}
+
+	// pick region -> ephemeral -> checking
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking {
+		t.Fatalf("after region pick current = %v, want screenChecking", m.current)
+	}
+
+	// identity -> menu
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "111111111111"}, region: "sa-east-1"})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+
+	// quit from menu -> cleanup runs
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // to "Sair"
+	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = next
+	if !cleaned {
+		t.Fatal("cleanup was not called on quit")
+	}
+}
+
+func TestRoot_SSOFlow_NeedLoginGoesToLoginThenRetries(t *testing.T) {
+	m := NewRoot(ssoDeps(func() {}))
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select session
+
+	// token missing -> needLogin -> login screen
+	m = drive(m, needLoginMsg{})
+	if m.current != screenLogin {
+		t.Fatalf("current = %v, want screenLogin", m.current)
+	}
+
+	// login done -> re-init discoverer (checking)
+	next, cmd := m.Update(loginDoneMsg{err: nil})
+	m = next.(rootModel)
+	if m.current != screenChecking {
+		t.Fatalf("current = %v, want screenChecking", m.current)
+	}
+	if cmd == nil {
+		t.Fatal("expected discoverer init command after login")
+	}
+}
+
 func TestRoot_NoTargetsShowsGuidance(t *testing.T) {
 	m := NewRoot(fakeDeps())
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})

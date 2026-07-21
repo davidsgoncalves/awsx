@@ -17,6 +17,11 @@ const (
 	screenInstances
 	screenError
 	screenQuit
+	// Appended after screenQuit to preserve the numeric values of the states
+	// above (some tests assert on them).
+	screenAccounts
+	screenRoles
+	screenRegion
 )
 
 type errorAction struct {

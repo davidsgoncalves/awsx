@@ -5,6 +5,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -23,18 +24,24 @@ func NewRootCmd() *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ps, err := profiles.Parse(config.ConfigPath())
+			configPath := config.ConfigPath()
+			ps, err := profiles.Parse(configPath)
 			if err != nil {
 				return fmt.Errorf("read profiles: %w", err)
 			}
-			if len(ps) == 0 {
+			sessions, err := profiles.ParseSSOSessions(configPath)
+			if err != nil {
+				return fmt.Errorf("read sso sessions: %w", err)
+			}
+			if len(ps) == 0 && len(sessions) == 0 {
 				_, err := fmt.Fprintln(cmd.OutOrStdout(),
 					"Nenhum perfil AWS foi encontrado. Configure a AWS CLI (aws configure sso) antes de continuar.")
 				return err
 			}
 			return tui.Run(tui.Deps{
-				Profiles: ps,
-				Checks:   deps.Check(),
+				Profiles:    ps,
+				SSOSessions: sessions,
+				Checks:      deps.Check(),
 				NewClients: func(ctx context.Context, profile string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
 					c, region, err := awsx.NewClients(ctx, profile)
 					if err != nil {
@@ -45,6 +52,26 @@ func NewRootCmd() *cobra.Command {
 				NewCLI: func(profile string) (awsx.Login, awsx.Sessioner) {
 					cli := awsx.CLI{Profile: profile}
 					return cli, cli
+				},
+				NewDiscoverer: func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error) {
+					return awsx.NewSSOClient(ctx, session, time.Now())
+				},
+				NewSSOLogin: func(session profiles.SSOSession) awsx.Login {
+					return awsx.SSOSessionLogin{Session: session.Name}
+				},
+				NewEphemeral: func(session profiles.SSOSession, accountID, roleName, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.Sessioner, string, func(), error) {
+					eph, err := awsx.WriteEphemeralProfile(session, accountID, roleName, region)
+					if err != nil {
+						return nil, nil, nil, nil, "", nil, err
+					}
+					clients, resolved, err := eph.Clients(context.Background())
+					if err != nil {
+						_ = eph.Close()
+						return nil, nil, nil, nil, "", nil, err
+					}
+					sess := awsx.CLI{Profile: eph.Profile, ConfigFile: eph.ConfigPath}
+					cleanup := func() { _ = eph.Close() }
+					return clients, clients, clients, sess, resolved, cleanup, nil
 				},
 			})
 		},

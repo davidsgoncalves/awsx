@@ -21,6 +21,12 @@ type targetsMsg struct{ targets []awsx.Target }
 type loginDoneMsg struct{ err error }
 type sessionEndedMsg struct{ err error }
 
+// SSO account/role discovery messages.
+type needLoginMsg struct{}
+type discovererReadyMsg struct{ d awsx.SSODiscoverer }
+type accountsMsg struct{ accounts []awsx.Account }
+type rolesMsg struct{ roles []awsx.Role }
+
 // errMsg carries a failed operation. action, when set, is the denied IAM action
 // (e.g. "ec2:DescribeInstances") extracted from the SDK error.
 type errMsg struct {
@@ -73,5 +79,46 @@ func loginCmd(l awsx.Login) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		defer cancel()
 		return loginDoneMsg{err: l.SSOLogin(ctx)}
+	}
+}
+
+// initDiscovererCmd builds the SSO discoverer. A missing/expired token yields
+// needLoginMsg so the caller can trigger sso-session login and retry.
+func initDiscovererCmd(newDisc func(ctx context.Context) (awsx.SSODiscoverer, error)) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		d, err := newDisc(ctx)
+		if err != nil {
+			if errors.Is(err, awsx.ErrTokenExpiredOrMissing) {
+				return needLoginMsg{}
+			}
+			return errMsg{err: err}
+		}
+		return discovererReadyMsg{d: d}
+	}
+}
+
+func loadAccountsCmd(d awsx.SSODiscoverer) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		accts, err := d.Accounts(ctx)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "sso:ListAccounts")}
+		}
+		return accountsMsg{accounts: accts}
+	}
+}
+
+func loadRolesCmd(d awsx.SSODiscoverer, accountID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		roles, err := d.Roles(ctx, accountID)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "sso:ListAccountRoles")}
+		}
+		return rolesMsg{roles: roles}
 	}
 }

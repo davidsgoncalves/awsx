@@ -51,6 +51,42 @@ func Parse(configPath string) ([]Profile, error) {
 	return out, nil
 }
 
+// SSOSession is an IAM Identity Center session defined by an [sso-session]
+// block in the AWS config file.
+type SSOSession struct {
+	Name     string
+	StartURL string
+	Region   string
+}
+
+// ParseSSOSessions reads the [sso-session NAME] blocks from an AWS config file,
+// sorted by name. A missing file yields an empty slice and no error.
+func ParseSSOSessions(configPath string) ([]SSOSession, error) {
+	f, err := ini.Load(configPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var out []SSOSession
+	for _, s := range f.Sections() {
+		name, ok := strings.CutPrefix(s.Name(), "sso-session ")
+		if !ok {
+			continue
+		}
+		out = append(out, SSOSession{
+			Name:     strings.TrimSpace(name),
+			StartURL: s.Key("sso_start_url").String(),
+			Region:   s.Key("sso_region").String(),
+		})
+	}
+
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
 // profileName maps a config section name to a profile name. In AWS config,
 // the default profile is "[default]" and others are "[profile NAME]".
 func profileName(section string) (string, bool) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
@@ -33,11 +34,16 @@ func NewClients(ctx context.Context, profile string) (*Clients, string, error) {
 		return nil, "", err
 	}
 	cfg.Region = region
+	return newClientsFromConfig(cfg), region, nil
+}
+
+// newClientsFromConfig builds the SDK-backed readers from a resolved config.
+func newClientsFromConfig(cfg awssdk.Config) *Clients {
 	return &Clients{
 		sts: sts.NewFromConfig(cfg),
 		ec2: ec2.NewFromConfig(cfg),
 		ssm: ssm.NewFromConfig(cfg),
-	}, region, nil
+	}
 }
 
 // WhoAmI implements IdentityProvider.

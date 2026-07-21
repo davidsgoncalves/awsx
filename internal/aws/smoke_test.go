@@ -5,6 +5,9 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/davidsgoncalves/awsx/internal/config"
+	"github.com/davidsgoncalves/awsx/internal/profiles"
 )
 
 // TestSmoke_Boundary exercises the real AWS boundary end-to-end against a live
@@ -51,4 +54,53 @@ func TestSmoke_Boundary(t *testing.T) {
 	for _, tg := range targets {
 		t.Logf("  - %-24s %-12s %-10s %s", DisplayName(tg.Instance), tg.ID, tg.Type, tg.PrivateIP)
 	}
+}
+
+// TestSmoke_SSODiscovery exercises the live SSO discovery path (ListAccounts,
+// ListAccountRoles) against a real sso-session. Skipped unless
+// AWSX_SMOKE_SSO_SESSION names a session in ~/.aws/config. Read-only.
+//
+// Run with: AWSX_SMOKE_SSO_SESSION=<name> go test ./internal/aws/ -run TestSmoke_SSODiscovery -v
+func TestSmoke_SSODiscovery(t *testing.T) {
+	name := os.Getenv("AWSX_SMOKE_SSO_SESSION")
+	if name == "" {
+		t.Skip("set AWSX_SMOKE_SSO_SESSION to run the live SSO discovery smoke test")
+	}
+
+	sessions, err := profiles.ParseSSOSessions(config.ConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session profiles.SSOSession
+	for _, s := range sessions {
+		if s.Name == name {
+			session = s
+		}
+	}
+	if session.Name == "" {
+		t.Fatalf("sso-session %q not found in config", name)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	c, err := NewSSOClient(ctx, session, time.Now())
+	if err != nil {
+		t.Fatalf("NewSSOClient: %v (try: aws sso login --sso-session %s)", err, name)
+	}
+
+	accounts, err := c.Accounts(ctx)
+	if err != nil {
+		t.Fatalf("Accounts: %v", err)
+	}
+	t.Logf("accounts: %d", len(accounts))
+	if len(accounts) == 0 {
+		return
+	}
+
+	roles, err := c.Roles(ctx, accounts[0].ID)
+	if err != nil {
+		t.Fatalf("Roles(%s): %v", accounts[0].ID, err)
+	}
+	t.Logf("first account %s (%s) roles: %d", accounts[0].Name, accounts[0].ID, len(roles))
 }

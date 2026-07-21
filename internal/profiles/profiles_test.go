@@ -52,6 +52,45 @@ region = us-west-2
 	}
 }
 
+func TestParseSSOSessions(t *testing.T) {
+	body := `
+[profile p]
+region = us-east-1
+
+[sso-session vakinha]
+sso_start_url = https://example.awsapps.com/start
+sso_region = us-east-1
+
+[sso-session acme]
+sso_start_url = https://acme.awsapps.com/start
+sso_region = eu-west-1
+`
+	got, err := ParseSSOSessions(writeConfig(t, body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 sessions, got %d: %v", len(got), got)
+	}
+	// sorted by name: acme, vakinha
+	if got[0].Name != "acme" || got[1].Name != "vakinha" {
+		t.Fatalf("unexpected order: %v", got)
+	}
+	if got[1].StartURL != "https://example.awsapps.com/start" || got[1].Region != "us-east-1" {
+		t.Fatalf("vakinha fields wrong: %+v", got[1])
+	}
+}
+
+func TestParseSSOSessions_MissingFileReturnsEmpty(t *testing.T) {
+	got, err := ParseSSOSessions("/does/not/exist/config")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("want empty, got %v", got)
+	}
+}
+
 func TestParse_MissingFileReturnsEmpty(t *testing.T) {
 	got, err := Parse(filepath.Join(t.TempDir(), "does-not-exist"))
 	if err != nil {
