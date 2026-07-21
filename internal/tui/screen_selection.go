@@ -7,6 +7,18 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 )
 
+// profileItem is a regular AWS profile in the selection list.
+type profileItem struct{ p profiles.Profile }
+
+func (i profileItem) FilterValue() string { return i.p.Name }
+func (i profileItem) Title() string {
+	if i.p.IsSSO {
+		return i.p.Name + "  (SSO)"
+	}
+	return i.p.Name
+}
+func (i profileItem) Description() string { return i.p.Region }
+
 // ssoSessionItem is an [sso-session] entry in the selection list. Selecting it
 // branches into the account/role/region pickers.
 type ssoSessionItem struct{ s profiles.SSOSession }

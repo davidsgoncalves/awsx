@@ -10,13 +10,21 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 )
 
-// Deps is the injection seam for the TUI. Real wiring lives in Task 15; tests
-// supply fakes.
+// Deps is the injection seam for the TUI. Real wiring lives in cli/root.go;
+// tests supply fakes.
 type Deps struct {
-	Profiles   []profiles.Profile
-	Checks     []deps.Dependency
+	Profiles    []profiles.Profile
+	SSOSessions []profiles.SSOSession
+	Checks      []deps.Dependency
+
+	// Profile flow.
 	NewClients func(ctx context.Context, profile string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error)
 	NewCLI     func(profile string) (awsx.Login, awsx.Sessioner)
+
+	// SSO-session flow.
+	NewDiscoverer func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error)
+	NewSSOLogin   func(session profiles.SSOSession) awsx.Login
+	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
 type rootModel struct {
@@ -24,11 +32,15 @@ type rootModel struct {
 	current screen
 
 	depsScreen      depsScreen
-	profileScreen   profileScreen
+	selectionScreen selectionScreen
+	accountScreen   accountScreen
+	roleScreen      roleScreen
+	regionScreen    regionScreen
 	menuScreen      menuScreen
 	instancesScreen instancesScreen
 	errorScreen     errorScreen
 
+	// Profile / resolved-session state.
 	profile string
 	region  string
 	idp     awsx.IdentityProvider
@@ -37,15 +49,23 @@ type rootModel struct {
 	login   awsx.Login
 	session awsx.Sessioner
 
+	// SSO-session flow state.
+	inSSOFlow  bool
+	ssoSession profiles.SSOSession
+	discoverer awsx.SSODiscoverer
+	accountID  string
+	roleName   string
+	cleanup    func()
+
+	loading       string
 	width, height int
 	quitting      bool
 }
 
-// NewRoot builds the initial model. The dependency check is evaluated eagerly:
-// missing deps route straight to an error screen, otherwise the profile
-// selector is shown.
+// NewRoot builds the initial model. Missing deps route straight to an error
+// screen; otherwise the selection screen (profiles + SSO sessions) is shown.
 func NewRoot(d Deps) rootModel {
-	m := rootModel{deps: d}
+	m := rootModel{deps: d, loading: "Carregando..."}
 	m.depsScreen = newDepsScreen(d.Checks)
 	if !m.depsScreen.allFound() {
 		m.current = screenError
@@ -59,7 +79,7 @@ func NewRoot(d Deps) rootModel {
 		return m
 	}
 	m.current = screenProfiles
-	m.profileScreen = newProfileScreen(d.Profiles)
+	m.selectionScreen = newSelectionScreen(d.Profiles, d.SSOSessions)
 	return m
 }
 
@@ -71,12 +91,11 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
-			m.quitting = true
-			return m, tea.Quit
+			return m.quit()
 		}
 	case identityMsg:
 		m.region = msg.region
-		m.menuScreen = newMenuScreen(m.profile, msg.region, msg.id)
+		m.menuScreen = newMenuScreen(m.displayProfile(), msg.region, msg.id)
 		m.current = screenMenu
 		return m, nil
 	case targetsMsg:
@@ -94,15 +113,38 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m.current = screenInstances
 		return m, nil
+	case needLoginMsg:
+		m.current = screenLogin
+		return m, loginCmd(m.deps.NewSSOLogin(m.ssoSession))
+	case discovererReadyMsg:
+		m.discoverer = msg.d
+		m.current = screenChecking
+		m.loading = "Carregando contas..."
+		return m, loadAccountsCmd(msg.d)
+	case accountsMsg:
+		m.accountScreen = newAccountScreen(msg.accounts)
+		m.accountScreen, _, _ = m.accountScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.current = screenAccounts
+		return m, nil
+	case rolesMsg:
+		m.roleScreen = newRoleScreen(msg.roles)
+		m.roleScreen, _, _ = m.roleScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.current = screenRoles
+		return m, nil
 	case loginDoneMsg:
 		if msg.err != nil {
 			return m.toError("O login foi cancelado ou não foi concluído.", "", []errorAction{
-				{label: "Tentar novamente", next: screenChecking},
 				{label: "Escolher outro perfil", next: screenProfiles},
 				{label: "Sair", next: screenQuit},
 			}), nil
 		}
+		if m.inSSOFlow && m.discoverer == nil {
+			m.current = screenChecking
+			m.loading = "Verificando sessão..."
+			return m, initDiscovererCmd(m.discovererFactory())
+		}
 		m.current = screenChecking
+		m.loading = "Verificando sessão..."
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
 		return m.toError("Sessão encerrada.", "", []errorAction{
@@ -130,15 +172,52 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // routeToScreen dispatches a message to the active screen and applies the
-// screen transition it requests.
+// transition it requests.
 func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch m.current {
 	case screenProfiles:
-		var sel *profiles.Profile
+		var prof *profiles.Profile
+		var sess *profiles.SSOSession
 		var cmd tea.Cmd
-		m.profileScreen, sel, cmd = m.profileScreen.Update(msg)
+		m.selectionScreen, prof, sess, cmd = m.selectionScreen.Update(msg)
+		if sess != nil {
+			return m.startSSOSession(*sess)
+		}
+		if prof != nil {
+			return m.startChecking(*prof)
+		}
+		return m, cmd
+
+	case screenAccounts:
+		var sel *awsx.Account
+		var cmd tea.Cmd
+		m.accountScreen, sel, cmd = m.accountScreen.Update(msg)
 		if sel != nil {
-			return m.startChecking(*sel)
+			m.accountID = sel.ID
+			m.current = screenChecking
+			m.loading = "Carregando roles..."
+			return m, loadRolesCmd(m.discoverer, sel.ID)
+		}
+		return m, cmd
+
+	case screenRoles:
+		var sel *awsx.Role
+		var cmd tea.Cmd
+		m.roleScreen, sel, cmd = m.roleScreen.Update(msg)
+		if sel != nil {
+			m.roleName = sel.Name
+			m.regionScreen = newRegionScreen(awsx.Regions())
+			m.regionScreen, _, _ = m.regionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			m.current = screenRegion
+		}
+		return m, cmd
+
+	case screenRegion:
+		var sel *string
+		var cmd tea.Cmd
+		m.regionScreen, sel, cmd = m.regionScreen.Update(msg)
+		if sel != nil {
+			return m.startEphemeral(*sel)
 		}
 		return m, cmd
 
@@ -150,8 +229,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenInstances
 			return m, loadTargetsCmd(m.ec2, m.ssm)
 		case screenQuit:
-			m.quitting = true
-			return m, tea.Quit
+			return m.quit()
 		}
 		return m, nil
 
@@ -176,7 +254,9 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// startChecking begins the profile flow: build clients, then resolve identity.
 func (m rootModel) startChecking(p profiles.Profile) (tea.Model, tea.Cmd) {
+	m.inSSOFlow = false
 	m.profile = p.Name
 	idp, ec2c, ssmc, region, err := m.deps.NewClients(context.Background(), p.Name)
 	if err != nil {
@@ -190,8 +270,45 @@ func (m rootModel) startChecking(p profiles.Profile) (tea.Model, tea.Cmd) {
 		m.login, m.session = m.deps.NewCLI(p.Name)
 	}
 	m.current = screenChecking
-	// Try identity first; on failure the error path can route to login.
+	m.loading = "Verificando sessão..."
 	return m, loadIdentityCmd(m.idp, m.region)
+}
+
+// startSSOSession begins the SSO-session flow: build the discoverer (logging in
+// first if the token is missing/expired).
+func (m rootModel) startSSOSession(s profiles.SSOSession) (tea.Model, tea.Cmd) {
+	m.inSSOFlow = true
+	m.ssoSession = s
+	m.discoverer = nil
+	m.login = m.deps.NewSSOLogin(s)
+	m.current = screenChecking
+	m.loading = "Verificando sessão..."
+	return m, initDiscovererCmd(m.discovererFactory())
+}
+
+// startEphemeral builds the ephemeral clients for the chosen account/role/region
+// and resolves identity.
+func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
+	idp, ec2c, ssmc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
+	if err != nil {
+		return m.toError("Não foi possível preparar as credenciais.", err.Error(), []errorAction{
+			{label: "Escolher outra conta", next: screenAccounts},
+			{label: "Sair", next: screenQuit},
+		}), nil
+	}
+	m.idp, m.ec2, m.ssm, m.session = idp, ec2c, ssmc, sess
+	m.region = region2
+	m.cleanup = cleanup
+	m.current = screenChecking
+	m.loading = "Verificando sessão..."
+	return m, loadIdentityCmd(m.idp, m.region)
+}
+
+func (m rootModel) discovererFactory() func(ctx context.Context) (awsx.SSODiscoverer, error) {
+	s := m.ssoSession
+	return func(ctx context.Context) (awsx.SSODiscoverer, error) {
+		return m.deps.NewDiscoverer(ctx, s)
+	}
 }
 
 func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
@@ -199,8 +316,7 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 	case screenError:
 		return m, nil
 	case screenQuit:
-		m.quitting = true
-		return m, tea.Quit
+		return m.quit()
 	case screenChecking:
 		if m.login != nil {
 			m.current = screenLogin
@@ -210,6 +326,9 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 		return m, loadIdentityCmd(m.idp, m.region)
 	case screenProfiles:
 		m.current = screenProfiles
+		return m, nil
+	case screenAccounts:
+		m.current = screenAccounts
 		return m, nil
 	case screenInstances:
 		m.current = screenInstances
@@ -227,6 +346,24 @@ func (m rootModel) toError(title, detail string, actions []errorAction) rootMode
 	return m
 }
 
+// quit runs cleanup (removing any ephemeral temp dir) and quits.
+func (m rootModel) quit() (tea.Model, tea.Cmd) {
+	if m.cleanup != nil {
+		m.cleanup()
+	}
+	m.quitting = true
+	return m, tea.Quit
+}
+
+// displayProfile is the label for the menu header: the profile name, or the
+// account/role for the SSO-session flow.
+func (m rootModel) displayProfile() string {
+	if m.inSSOFlow {
+		return m.ssoSession.Name + " / " + m.accountID + " / " + m.roleName
+	}
+	return m.profile
+}
+
 func (m rootModel) View() string {
 	if m.quitting {
 		return ""
@@ -235,9 +372,15 @@ func (m rootModel) View() string {
 	case screenDeps:
 		return m.depsScreen.View()
 	case screenProfiles:
-		return m.profileScreen.View()
+		return m.selectionScreen.View()
+	case screenAccounts:
+		return m.accountScreen.View()
+	case screenRoles:
+		return m.roleScreen.View()
+	case screenRegion:
+		return m.regionScreen.View()
 	case screenChecking:
-		return styleFaint.Render("Verificando sessão...")
+		return styleFaint.Render(m.loading)
 	case screenLogin:
 		return styleFaint.Render("Abrindo autenticação AWS...")
 	case screenMenu:
