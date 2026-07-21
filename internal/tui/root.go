@@ -2,10 +2,12 @@ package tui
 
 import (
 	"context"
+	"errors"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
+	"github.com/davidsgoncalves/awsx/internal/config"
 	"github.com/davidsgoncalves/awsx/internal/deps"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 )
@@ -17,8 +19,9 @@ type Deps struct {
 	SSOSessions []profiles.SSOSession
 	Checks      []deps.Dependency
 
-	// Profile flow.
-	NewClients func(ctx context.Context, profile string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error)
+	// Profile flow. region is a region override; "" means resolve from the
+	// profile/env (config.ErrNoRegion when none is configured).
+	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error)
 	NewCLI     func(profile string) (awsx.Login, awsx.Sessioner)
 
 	// SSO-session flow.
@@ -48,6 +51,9 @@ type rootModel struct {
 	ssm     awsx.SSMLister
 	login   awsx.Login
 	session awsx.Sessioner
+
+	// pendingProfile is a profile awaiting a region choice (profile flow).
+	pendingProfile profiles.Profile
 
 	// SSO-session flow state.
 	inSSOFlow  bool
@@ -184,7 +190,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.startSSOSession(*sess)
 		}
 		if prof != nil {
-			return m.startChecking(*prof)
+			return m.startChecking(*prof, "")
 		}
 		return m, cmd
 
@@ -217,7 +223,10 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.regionScreen, sel, cmd = m.regionScreen.Update(msg)
 		if sel != nil {
-			return m.startEphemeral(*sel)
+			if m.inSSOFlow {
+				return m.startEphemeral(*sel)
+			}
+			return m.startChecking(m.pendingProfile, *sel)
 		}
 		return m, cmd
 
@@ -255,17 +264,26 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // startChecking begins the profile flow: build clients, then resolve identity.
-func (m rootModel) startChecking(p profiles.Profile) (tea.Model, tea.Cmd) {
+// region is a region override; when empty and the profile has no configured
+// region, the region picker is shown instead of erroring.
+func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, tea.Cmd) {
 	m.inSSOFlow = false
 	m.profile = p.Name
-	idp, ec2c, ssmc, region, err := m.deps.NewClients(context.Background(), p.Name)
+	idp, ec2c, ssmc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
 	if err != nil {
+		if errors.Is(err, config.ErrNoRegion) {
+			m.pendingProfile = p
+			m.regionScreen = newRegionScreen(awsx.Regions())
+			m.regionScreen, _, _ = m.regionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			m.current = screenRegion
+			return m, nil
+		}
 		return m.toError("Não foi possível preparar o perfil.", err.Error(), []errorAction{
 			{label: "Escolher outro perfil", next: screenProfiles},
 			{label: "Sair", next: screenQuit},
 		}), nil
 	}
-	m.idp, m.ec2, m.ssm, m.region = idp, ec2c, ssmc, region
+	m.idp, m.ec2, m.ssm, m.region = idp, ec2c, ssmc, resolved
 	if m.deps.NewCLI != nil {
 		m.login, m.session = m.deps.NewCLI(p.Name)
 	}

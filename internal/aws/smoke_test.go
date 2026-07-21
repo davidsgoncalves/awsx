@@ -25,7 +25,7 @@ func TestSmoke_Boundary(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	clients, region, err := NewClients(ctx, profile)
+	clients, region, err := NewClients(ctx, profile, "")
 	if err != nil {
 		t.Fatalf("NewClients(%q): %v", profile, err)
 	}

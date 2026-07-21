@@ -42,12 +42,12 @@ func NewRootCmd() *cobra.Command {
 				Profiles:    ps,
 				SSOSessions: sessions,
 				Checks:      deps.Check(),
-				NewClients: func(ctx context.Context, profile string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
-					c, region, err := awsx.NewClients(ctx, profile)
+				NewClients: func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+					c, resolved, err := awsx.NewClients(ctx, profile, region)
 					if err != nil {
 						return nil, nil, nil, "", err
 					}
-					return c, c, c, region, nil
+					return c, c, c, resolved, nil
 				},
 				NewCLI: func(profile string) (awsx.Login, awsx.Sessioner) {
 					cli := awsx.CLI{Profile: profile}
