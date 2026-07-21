@@ -15,7 +15,7 @@ func TestProfileScreen_EnterSelects(t *testing.T) {
 	})
 	// list needs a size to render/select
 	s, _, _ = s.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	s, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if sel == nil {
 		t.Fatal("want a selected profile, got nil")
 	}

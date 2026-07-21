@@ -19,7 +19,7 @@ func targets() []awsx.Target {
 func TestInstancesScreen_EnterSelects(t *testing.T) {
 	s := newInstancesScreen(targets())
 	s, _, _ = s.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	s, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if sel == nil || sel.ID != "i-1" {
 		t.Fatalf("want i-1 selected, got %+v", sel)
 	}

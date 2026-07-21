@@ -48,12 +48,12 @@ func (m menuScreen) Update(msg tea.Msg) (menuScreen, screen) {
 func (m menuScreen) View() string {
 	var b strings.Builder
 	b.WriteString(styleTitle.Render("AWSX") + "\n\n")
-	b.WriteString(fmt.Sprintf("Perfil: %s\n", m.profile))
-	b.WriteString(fmt.Sprintf("Conta: %s\n", m.id.Account))
+	fmt.Fprintf(&b, "Perfil: %s\n", m.profile)
+	fmt.Fprintf(&b, "Conta: %s\n", m.id.Account)
 	if role := roleFromArn(m.id.Arn); role != "" {
-		b.WriteString(fmt.Sprintf("Role: %s\n", role))
+		fmt.Fprintf(&b, "Role: %s\n", role)
 	}
-	b.WriteString(fmt.Sprintf("Região: %s\n\n", m.region))
+	fmt.Fprintf(&b, "Região: %s\n\n", m.region)
 	for i, a := range menuActions {
 		cursor := "  "
 		if i == m.cursor {

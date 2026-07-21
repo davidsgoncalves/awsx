@@ -28,9 +28,9 @@ func NewRootCmd() *cobra.Command {
 				return fmt.Errorf("read profiles: %w", err)
 			}
 			if len(ps) == 0 {
-				fmt.Fprintln(cmd.OutOrStdout(),
+				_, err := fmt.Fprintln(cmd.OutOrStdout(),
 					"Nenhum perfil AWS foi encontrado. Configure a AWS CLI (aws configure sso) antes de continuar.")
-				return nil
+				return err
 			}
 			return tui.Run(tui.Deps{
 				Profiles: ps,
