@@ -80,6 +80,16 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.current = screenMenu
 		return m, nil
 	case targetsMsg:
+		if len(msg.targets) == 0 {
+			return m.toError(
+				"Nenhuma instância EC2 disponível via SSM foi encontrada.",
+				"Possíveis motivos: nenhuma instância em execução; SSM Agent desconectado; instância sem IAM Role para SSM; perfil sem permissão; região sem instâncias.",
+				[]errorAction{
+					{label: "Voltar para o menu principal", next: screenMenu},
+					{label: "Sair", next: screenQuit},
+				},
+			), nil
+		}
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m.current = screenInstances

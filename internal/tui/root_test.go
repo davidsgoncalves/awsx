@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -97,6 +98,18 @@ func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	_ = cmd() // execute the login cmd; fake sets called=true
 	if !called {
 		t.Fatal("login was not invoked")
+	}
+}
+
+func TestRoot_NoTargetsShowsGuidance(t *testing.T) {
+	m := NewRoot(fakeDeps())
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, targetsMsg{targets: nil})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	if !strings.Contains(m.errorScreen.View(), "Nenhuma instância") {
+		t.Fatalf("view missing empty message: %q", m.errorScreen.View())
 	}
 }
 
