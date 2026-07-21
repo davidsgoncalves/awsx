@@ -33,9 +33,15 @@ func (c CLI) SSOLogin(ctx context.Context) error {
 // StartSession runs `aws ssm start-session`, handing over stdin/stdout/stderr
 // so the session-manager-plugin takes control of the terminal.
 func (c CLI) StartSession(instanceID string) error {
+	return c.SessionCommand(instanceID).Run()
+}
+
+// SessionCommand builds the start-session command with the TTY wired to the
+// current process, for use with tea.ExecProcess.
+func (c CLI) SessionCommand(instanceID string) *exec.Cmd {
 	cmd := exec.Command("aws", sessionArgs(c.Profile, instanceID)...)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	return cmd.Run()
+	return cmd
 }
