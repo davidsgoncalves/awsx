@@ -64,6 +64,42 @@ func TestRoot_MissingDepGoesToError(t *testing.T) {
 	}
 }
 
+type failIDP struct{}
+
+func (failIDP) WhoAmI(context.Context) (awsx.Identity, error) {
+	return awsx.Identity{}, context.DeadlineExceeded // stand-in for expired/invalid
+}
+
+type fakeLogin struct{ called *bool }
+
+func (f fakeLogin) SSOLogin(context.Context) error { *f.called = true; return nil }
+
+func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
+	called := false
+	d := fakeDeps()
+	d.NewClients = func(context.Context, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+		return failIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
+	}
+	d.NewCLI = func(string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
+
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile -> checking
+	// identity fails during checking:
+	next, cmd := m.Update(errMsg{err: context.DeadlineExceeded})
+	m = next.(rootModel)
+	if m.current != screenLogin {
+		t.Fatalf("current = %v, want screenLogin", m.current)
+	}
+	if cmd == nil {
+		t.Fatal("expected a login command")
+	}
+	_ = cmd() // execute the login cmd; fake sets called=true
+	if !called {
+		t.Fatal("login was not invoked")
+	}
+}
+
 func TestRoot_SelectProfileThenIdentityShowsMenu(t *testing.T) {
 	m := NewRoot(fakeDeps())
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})

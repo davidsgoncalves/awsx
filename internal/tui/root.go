@@ -101,6 +101,12 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			{label: "Sair", next: screenQuit},
 		}), nil
 	case errMsg:
+		// During the checking phase, an identity failure means the session is
+		// expired/invalid: route to SSO login instead of a generic error.
+		if m.current == screenChecking && m.login != nil {
+			m.current = screenLogin
+			return m, loginCmd(m.login)
+		}
 		detail := ""
 		if msg.action != "" {
 			detail = "Permissão necessária: " + msg.action
