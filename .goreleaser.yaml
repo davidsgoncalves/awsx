@@ -1,0 +1,66 @@
+version: 2
+
+project_name: awsx
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: awsx
+    main: ./cmd/awsx
+    binary: awsx
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: awsx
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+
+homebrew_casks:
+  - name: awsx
+    directory: Casks
+    repository:
+      owner: davidsgoncalves
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: "https://github.com/davidsgoncalves/awsx"
+    description: "Interactive AWS login and EC2 access via SSM Session Manager"
+    url:
+      verified: "github.com/davidsgoncalves/awsx/"
+    dependencies:
+      - formula: awscli
+      - cask: session-manager-plugin
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/awsx"]
+          end
