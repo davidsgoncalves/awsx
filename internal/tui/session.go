@@ -2,11 +2,30 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 )
+
+// execWithCapture runs cmd via tea.ExecProcess, capturing its stderr (alongside
+// the terminal) so a failure message survives the TUI redraw and reaches the
+// error screen and log.
+func execWithCapture(cmd *exec.Cmd) tea.Cmd {
+	buf := &strings.Builder{}
+	if cmd.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(cmd.Stderr, buf)
+	} else {
+		cmd.Stderr = buf
+	}
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return sessionEndedMsg{err: err, stderr: strings.TrimSpace(buf.String())}
+	})
+}
 
 // sessionExec returns an *exec.Cmd that, when run by tea.ExecProcess, hands the
 // terminal to the SSM session. The Sessioner interface is bypassed here because

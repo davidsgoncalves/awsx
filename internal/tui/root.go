@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -251,12 +249,15 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenLogin
 			return m, loginCmd(m.login)
 		}
-		detail := ""
+		m.deps.Log.Error("operation failed (action=%q): %v", msg.action, msg.err)
+		var detail string
 		if msg.action != "" {
-			detail = "Permissão necessária: " + msg.action
-		} else if msg.err != nil {
-			detail = msg.err.Error()
+			detail = "Permissão necessária: " + msg.action + "\n\n"
 		}
+		if msg.err != nil {
+			detail += msg.err.Error()
+		}
+		detail += "\n\nDetalhes no log: " + logging.Path()
 		return m.toError("Ocorreu um erro.", detail, nil), nil
 	}
 
@@ -345,9 +346,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name := awsx.DisplayName(sel.Instance)
 			m.connectingName, m.connectingID = name, id
 			m.deps.Log.Debug("opening ssm session: instance=%s (%s) region=%s", name, id, m.region)
-			return m, tea.ExecProcess(sessionExec(m.session, id, name), func(err error) tea.Msg {
-				return sessionEndedMsg{err: err}
-			})
+			return m, execWithCapture(sessionExec(m.session, id, name))
 		}
 		return m, cmd
 
@@ -465,18 +464,7 @@ func (m rootModel) startTunnel(db awsx.RDSInstance) (tea.Model, tea.Cmd) {
 	m.deps.Log.Debug("opening ssm tunnel: db=%s (%s:%d) via instance=%s local=%d region=%s",
 		db.Name, db.Endpoint, db.Port, id, localPort, m.region)
 
-	cmd := portForwardExec(m.session, id, db.Endpoint, db.Port, localPort)
-	// Capture stderr (alongside the terminal) so a failure message survives the
-	// TUI redraw and reaches the error screen and log.
-	buf := &strings.Builder{}
-	if cmd.Stderr != nil {
-		cmd.Stderr = io.MultiWriter(cmd.Stderr, buf)
-	} else {
-		cmd.Stderr = buf
-	}
-	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return sessionEndedMsg{err: err, stderr: strings.TrimSpace(buf.String())}
-	})
+	return m, execWithCapture(portForwardExec(m.session, id, db.Endpoint, db.Port, localPort))
 }
 
 // filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.
