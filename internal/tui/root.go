@@ -154,6 +154,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		if m.tunneling {
+			m.instancesScreen.list.Title = fmt.Sprintf("Escolha a instância que fará o túnel até %s", m.tunnelDB.Name)
 			m.current = screenTunnelInstance
 		} else {
 			m.current = screenInstances

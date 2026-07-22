@@ -300,6 +300,9 @@ func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
 	if m.current != screenTunnelInstance {
 		t.Fatalf("current = %v, want screenTunnelInstance", m.current)
 	}
+	if !strings.Contains(m.instancesScreen.list.Title, "db1") {
+		t.Fatalf("tunnel instance title should name the db: %q", m.instancesScreen.list.Title)
+	}
 
 	// pick instance -> a port-forward exec command is returned
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
