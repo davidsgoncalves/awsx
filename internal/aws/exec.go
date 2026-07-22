@@ -9,9 +9,12 @@ import (
 // CLI shells out to the AWS CLI for the two operations the SDK cannot do:
 // interactive SSO login and the terminal-owning SSM session. When ConfigFile is
 // set, commands run with AWS_CONFIG_FILE pointing at it, so the CLI resolves SSO
-// credentials from an ephemeral profile without touching ~/.aws/config.
+// credentials from an ephemeral profile without touching ~/.aws/config. Region,
+// when set, is passed to start-session so it works for profiles that have no
+// region configured.
 type CLI struct {
 	Profile    string
+	Region     string
 	ConfigFile string
 }
 
@@ -19,8 +22,12 @@ func loginArgs(profile string) []string {
 	return []string{"sso", "login", "--profile", profile}
 }
 
-func sessionArgs(profile, instanceID string) []string {
-	return []string{"ssm", "start-session", "--profile", profile, "--target", instanceID}
+func sessionArgs(profile, region, instanceID string) []string {
+	args := []string{"ssm", "start-session", "--profile", profile}
+	if region != "" {
+		args = append(args, "--region", region)
+	}
+	return append(args, "--target", instanceID)
 }
 
 func ssoSessionLoginArgs(session string) []string {
@@ -56,7 +63,7 @@ func (c CLI) StartSession(instanceID string) error {
 // SessionCommand builds the start-session command with the TTY wired to the
 // current process, for use with tea.ExecProcess.
 func (c CLI) SessionCommand(instanceID string) *exec.Cmd {
-	cmd := exec.Command("aws", sessionArgs(c.Profile, instanceID)...)
+	cmd := exec.Command("aws", sessionArgs(c.Profile, c.Region, instanceID)...)
 	cmd.Env = c.env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

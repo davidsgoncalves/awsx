@@ -3,13 +3,16 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 	"github.com/davidsgoncalves/awsx/internal/config"
 	"github.com/davidsgoncalves/awsx/internal/deps"
+	"github.com/davidsgoncalves/awsx/internal/logging"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
+	"github.com/davidsgoncalves/awsx/internal/state"
 )
 
 // Deps is the injection seam for the TUI. Real wiring lives in cli/root.go;
@@ -22,7 +25,11 @@ type Deps struct {
 	// Profile flow. region is a region override; "" means resolve from the
 	// profile/env (config.ErrNoRegion when none is configured).
 	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error)
-	NewCLI     func(profile string) (awsx.Login, awsx.Sessioner)
+	NewCLI     func(profile, region string) (awsx.Login, awsx.Sessioner)
+
+	// Optional cross-cutting services (nil-safe).
+	Log   *logging.Logger
+	State *state.State
 
 	// SSO-session flow.
 	NewDiscoverer func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error)
@@ -63,9 +70,32 @@ type rootModel struct {
 	roleName   string
 	cleanup    func()
 
+	// Instance currently being connected (for error reporting).
+	connectingName string
+	connectingID   string
+
 	loading       string
 	width, height int
 	quitting      bool
+}
+
+// remember stores a chosen region for key and persists it (best-effort).
+func (m rootModel) remember(key, region string) {
+	if m.deps.State == nil {
+		return
+	}
+	m.deps.State.SetRegion(key, region)
+	if err := m.deps.State.Save(); err != nil {
+		m.deps.Log.Error("could not save state: %v", err)
+	}
+}
+
+// savedRegion returns the remembered region for key, or "".
+func (m rootModel) savedRegion(key string) string {
+	if m.deps.State == nil {
+		return ""
+	}
+	return m.deps.State.Region(key)
 }
 
 // NewRoot builds the initial model. Missing deps route straight to an error
@@ -153,11 +183,19 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = "Verificando sessão..."
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
-		return m.toError("Sessão encerrada.", "", []errorAction{
+		actions := []errorAction{
 			{label: "Voltar para as instâncias", next: screenInstances},
 			{label: "Voltar para o menu principal", next: screenMenu},
 			{label: "Sair", next: screenQuit},
-		}), nil
+		}
+		if msg.err != nil {
+			m.deps.Log.Error("ssm session failed for %s (%s) region=%s: %v",
+				m.connectingName, m.connectingID, m.region, msg.err)
+			detail := fmt.Sprintf("Instância: %s (%s)\nRegião: %s\nErro: %v\n\nDetalhes no log: %s",
+				m.connectingName, m.connectingID, m.region, msg.err, logging.Path())
+			return m.toError("Não foi possível abrir a sessão SSM.", detail, actions), nil
+		}
+		return m.toError("Sessão encerrada.", "", actions), nil
 	case errMsg:
 		// During the checking phase, an identity failure means the session is
 		// expired/invalid: route to SSO login instead of a generic error.
@@ -212,7 +250,8 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.roleScreen, sel, cmd = m.roleScreen.Update(msg)
 		if sel != nil {
 			m.roleName = sel.Name
-			m.regionScreen = newRegionScreen(awsx.Regions())
+			preselect := m.savedRegion(state.SSOKey(m.ssoSession.Name, m.accountID, m.roleName))
+			m.regionScreen = newRegionScreen(awsx.Regions(), preselect)
 			m.regionScreen, _, _ = m.regionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			m.current = screenRegion
 		}
@@ -249,6 +288,8 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if sel != nil {
 			id := sel.ID
 			name := awsx.DisplayName(sel.Instance)
+			m.connectingName, m.connectingID = name, id
+			m.deps.Log.Debug("opening ssm session: instance=%s (%s) region=%s", name, id, m.region)
 			return m, tea.ExecProcess(sessionExec(m.session, id, name), func(err error) tea.Msg {
 				return sessionEndedMsg{err: err}
 			})
@@ -273,19 +314,23 @@ func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, 
 	if err != nil {
 		if errors.Is(err, config.ErrNoRegion) {
 			m.pendingProfile = p
-			m.regionScreen = newRegionScreen(awsx.Regions())
-			m.regionScreen, _, _ = m.regionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			m.current = screenRegion
+			m.regionScreen = newRegionScreen(awsx.Regions(), m.savedRegion(state.ProfileKey(p.Name)))
+			m.regionScreen, _, _ = m.regionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			return m, nil
 		}
+		m.deps.Log.Error("prepare profile %q failed: %v", p.Name, err)
 		return m.toError("Não foi possível preparar o perfil.", err.Error(), []errorAction{
 			{label: "Escolher outro perfil", next: screenProfiles},
 			{label: "Sair", next: screenQuit},
 		}), nil
 	}
+	if region != "" {
+		m.remember(state.ProfileKey(p.Name), region)
+	}
 	m.idp, m.ec2, m.ssm, m.region = idp, ec2c, ssmc, resolved
 	if m.deps.NewCLI != nil {
-		m.login, m.session = m.deps.NewCLI(p.Name)
+		m.login, m.session = m.deps.NewCLI(p.Name, resolved)
 	}
 	m.current = screenChecking
 	m.loading = "Verificando sessão..."
@@ -309,11 +354,14 @@ func (m rootModel) startSSOSession(s profiles.SSOSession) (tea.Model, tea.Cmd) {
 func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
 	idp, ec2c, ssmc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
 	if err != nil {
+		m.deps.Log.Error("prepare ephemeral creds failed (session=%s account=%s role=%s region=%s): %v",
+			m.ssoSession.Name, m.accountID, m.roleName, region, err)
 		return m.toError("Não foi possível preparar as credenciais.", err.Error(), []errorAction{
 			{label: "Escolher outra conta", next: screenAccounts},
 			{label: "Sair", next: screenQuit},
 		}), nil
 	}
+	m.remember(state.SSOKey(m.ssoSession.Name, m.accountID, m.roleName), region)
 	m.idp, m.ec2, m.ssm, m.session = idp, ec2c, ssmc, sess
 	m.region = region2
 	m.cleanup = cleanup

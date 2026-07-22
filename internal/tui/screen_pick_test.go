@@ -30,10 +30,20 @@ func TestRoleScreen_EnterSelects(t *testing.T) {
 }
 
 func TestRegionScreen_EnterSelects(t *testing.T) {
-	s := newRegionScreen([]string{"us-east-1", "sa-east-1"})
+	s := newRegionScreen([]string{"us-east-1", "sa-east-1"}, "")
 	s, _, _ = s.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	_, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if sel == nil || *sel != "us-east-1" {
 		t.Fatalf("want us-east-1, got %v", sel)
+	}
+}
+
+func TestRegionScreen_Preselect(t *testing.T) {
+	s := newRegionScreen([]string{"us-east-1", "sa-east-1", "eu-west-1"}, "sa-east-1")
+	s, _, _ = s.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	// Enter without moving should pick the preselected region.
+	_, sel, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if sel == nil || *sel != "sa-east-1" {
+		t.Fatalf("want preselected sa-east-1, got %v", sel)
 	}
 }
