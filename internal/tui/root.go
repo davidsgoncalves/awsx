@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -223,10 +225,14 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			{label: "Sair", next: screenQuit},
 		}
 		if msg.err != nil {
-			m.deps.Log.Error("ssm session failed for %s (%s) region=%s: %v",
-				m.connectingName, m.connectingID, m.region, msg.err)
-			detail := fmt.Sprintf("Alvo: %s (%s)\nRegião: %s\nErro: %v\n\nDetalhes no log: %s",
-				m.connectingName, m.connectingID, m.region, msg.err, logging.Path())
+			m.deps.Log.Error("ssm session failed for %s (%s) region=%s: %v | %s",
+				m.connectingName, m.connectingID, m.region, msg.err, msg.stderr)
+			awsErr := msg.stderr
+			if awsErr == "" {
+				awsErr = msg.err.Error()
+			}
+			detail := fmt.Sprintf("Alvo: %s (%s)\nRegião: %s\nErro: %s\n\nDetalhes no log: %s",
+				m.connectingName, m.connectingID, m.region, awsErr, logging.Path())
 			title := "Não foi possível abrir a sessão SSM."
 			if m.tunneling {
 				title = "Não foi possível abrir o túnel."
@@ -458,8 +464,18 @@ func (m rootModel) startTunnel(db awsx.RDSInstance) (tea.Model, tea.Cmd) {
 	m.connectingID = id
 	m.deps.Log.Debug("opening ssm tunnel: db=%s (%s:%d) via instance=%s local=%d region=%s",
 		db.Name, db.Endpoint, db.Port, id, localPort, m.region)
-	return m, tea.ExecProcess(portForwardExec(m.session, id, db.Endpoint, db.Port, localPort), func(err error) tea.Msg {
-		return sessionEndedMsg{err: err}
+
+	cmd := portForwardExec(m.session, id, db.Endpoint, db.Port, localPort)
+	// Capture stderr (alongside the terminal) so a failure message survives the
+	// TUI redraw and reaches the error screen and log.
+	buf := &strings.Builder{}
+	if cmd.Stderr != nil {
+		cmd.Stderr = io.MultiWriter(cmd.Stderr, buf)
+	} else {
+		cmd.Stderr = buf
+	}
+	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return sessionEndedMsg{err: err, stderr: strings.TrimSpace(buf.String())}
 	})
 }
 

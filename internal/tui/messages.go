@@ -19,7 +19,12 @@ type identityMsg struct {
 }
 type targetsMsg struct{ targets []awsx.Target }
 type loginDoneMsg struct{ err error }
-type sessionEndedMsg struct{ err error }
+type sessionEndedMsg struct {
+	err error
+	// stderr holds the captured error output of the child process (used for
+	// port-forward failures, where the message would otherwise be lost).
+	stderr string
+}
 
 // SSO account/role discovery messages.
 type needLoginMsg struct{}
