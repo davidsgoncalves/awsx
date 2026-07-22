@@ -14,9 +14,17 @@ func TestLoginArgs(t *testing.T) {
 	}
 }
 
-func TestSessionArgs(t *testing.T) {
-	got := sessionArgs("prod", "i-abc")
+func TestSessionArgs_NoRegion(t *testing.T) {
+	got := sessionArgs("prod", "", "i-abc")
 	want := []string{"ssm", "start-session", "--profile", "prod", "--target", "i-abc"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestSessionArgs_WithRegion(t *testing.T) {
+	got := sessionArgs("prod", "sa-east-1", "i-abc")
+	want := []string{"ssm", "start-session", "--profile", "prod", "--region", "sa-east-1", "--target", "i-abc"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

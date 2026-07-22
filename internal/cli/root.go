@@ -12,7 +12,9 @@ import (
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 	"github.com/davidsgoncalves/awsx/internal/config"
 	"github.com/davidsgoncalves/awsx/internal/deps"
+	"github.com/davidsgoncalves/awsx/internal/logging"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
+	"github.com/davidsgoncalves/awsx/internal/state"
 	"github.com/davidsgoncalves/awsx/internal/tui"
 )
 
@@ -38,10 +40,15 @@ func NewRootCmd() *cobra.Command {
 					"Nenhum perfil AWS foi encontrado. Configure a AWS CLI (aws configure sso) antes de continuar.")
 				return err
 			}
+			logger := logging.New(config.DebugEnabled())
+			defer func() { _ = logger.Close() }()
+
 			return tui.Run(tui.Deps{
 				Profiles:    ps,
 				SSOSessions: sessions,
 				Checks:      deps.Check(),
+				Log:         logger,
+				State:       state.Load(),
 				NewClients: func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
 					c, resolved, err := awsx.NewClients(ctx, profile, region)
 					if err != nil {
@@ -49,8 +56,8 @@ func NewRootCmd() *cobra.Command {
 					}
 					return c, c, c, resolved, nil
 				},
-				NewCLI: func(profile string) (awsx.Login, awsx.Sessioner) {
-					cli := awsx.CLI{Profile: profile}
+				NewCLI: func(profile, region string) (awsx.Login, awsx.Sessioner) {
+					cli := awsx.CLI{Profile: profile, Region: region}
 					return cli, cli
 				},
 				NewDiscoverer: func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error) {

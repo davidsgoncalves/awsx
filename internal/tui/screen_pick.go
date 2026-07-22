@@ -96,13 +96,21 @@ func (i regionItem) FilterValue() string { return i.name }
 
 type regionScreen struct{ list list.Model }
 
-func newRegionScreen(names []string) regionScreen {
+func newRegionScreen(names []string, preselect string) regionScreen {
 	items := make([]list.Item, len(names))
 	for i, n := range names {
 		items[i] = regionItem{name: n}
 	}
 	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
 	l.Title = "Selecione uma região"
+	if preselect != "" {
+		for i, n := range names {
+			if n == preselect {
+				l.Select(i)
+				break
+			}
+		}
+	}
 	return regionScreen{list: l}
 }
 

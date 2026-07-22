@@ -11,6 +11,7 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/config"
 	"github.com/davidsgoncalves/awsx/internal/deps"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
+	"github.com/davidsgoncalves/awsx/internal/state"
 )
 
 type fakeIDP struct{}
@@ -82,7 +83,7 @@ func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
 		return failIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
 	}
-	d.NewCLI = func(string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
+	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
 
 	m := NewRoot(d)
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -233,6 +234,28 @@ func TestRoot_ProfileWithoutRegionShowsRegionPicker(t *testing.T) {
 	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "af-south-1"})
 	if m.current != screenMenu {
 		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+}
+
+func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	d := fakeDeps()
+	d.State = st
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+		if region == "" {
+			return nil, nil, nil, "", config.ErrNoRegion
+		}
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, region, nil
+	}
+
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile -> region picker
+	drive(m, tea.KeyMsg{Type: tea.KeyEnter})     // pick first region (af-south-1)
+
+	if got := st.Region(state.ProfileKey("prod")); got != "af-south-1" {
+		t.Fatalf("remembered region = %q, want af-south-1", got)
 	}
 }
 
