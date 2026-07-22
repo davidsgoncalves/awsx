@@ -22,6 +22,8 @@ const (
 	screenAccounts
 	screenRoles
 	screenRegion
+	screenRDS
+	screenTunnelInstance
 )
 
 type errorAction struct {

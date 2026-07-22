@@ -43,6 +43,19 @@ type SSMLister interface {
 	OnlineInstanceIDs(ctx context.Context) (map[string]bool, error)
 }
 
+// RDSInstance is a database endpoint reachable through a tunnel.
+type RDSInstance struct {
+	Name     string
+	Engine   string
+	Endpoint string
+	Port     int
+}
+
+// RDSLister lists the RDS database instances in the resolved region.
+type RDSLister interface {
+	RDSInstances(ctx context.Context) ([]RDSInstance, error)
+}
+
 // Login performs the interactive SSO login (shell-out to the AWS CLI).
 type Login interface {
 	SSOLogin(ctx context.Context) error

@@ -30,6 +30,32 @@ func TestSessionArgs_WithRegion(t *testing.T) {
 	}
 }
 
+func TestPortForwardArgs(t *testing.T) {
+	got := portForwardArgs("prod", "sa-east-1", "i-1", "db.rds.amazonaws.com", 5432, 54321)
+	want := []string{
+		"ssm", "start-session", "--profile", "prod", "--region", "sa-east-1",
+		"--target", "i-1",
+		"--document-name", "AWS-StartPortForwardingSessionToRemoteHost",
+		"--parameters", "host=db.rds.amazonaws.com,portNumber=5432,localPortNumber=54321",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestPortForwardArgs_NoRegion(t *testing.T) {
+	got := portForwardArgs("prod", "", "i-1", "h", 6379, 6380)
+	want := []string{
+		"ssm", "start-session", "--profile", "prod",
+		"--target", "i-1",
+		"--document-name", "AWS-StartPortForwardingSessionToRemoteHost",
+		"--parameters", "host=h,portNumber=6379,localPortNumber=6380",
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
 func TestSSOSessionLoginArgs(t *testing.T) {
 	got := ssoSessionLoginArgs("vakinha")
 	want := []string{"sso", "login", "--sso-session", "vakinha"}

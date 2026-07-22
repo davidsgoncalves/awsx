@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 
@@ -24,4 +25,25 @@ func sessionExec(s awsx.Sessioner, instanceID, _ string) *exec.Cmd {
 // commandWriter lets a Sessioner expose its *exec.Cmd for tea.ExecProcess.
 type commandWriter interface {
 	SessionCommand(instanceID string) *exec.Cmd
+}
+
+// portForwarder lets a Sessioner expose an SSM port-forward *exec.Cmd.
+type portForwarder interface {
+	PortForwardCommand(instanceID, host string, remotePort, localPort int) *exec.Cmd
+}
+
+// portForwardExec returns the *exec.Cmd that opens the SSM tunnel, for
+// tea.ExecProcess. Falls back to a direct aws invocation if the Sessioner does
+// not expose PortForwardCommand.
+func portForwardExec(s awsx.Sessioner, instanceID, host string, remotePort, localPort int) *exec.Cmd {
+	if pf, ok := s.(portForwarder); ok {
+		return pf.PortForwardCommand(instanceID, host, remotePort, localPort)
+	}
+	cmd := exec.Command("aws", "ssm", "start-session",
+		"--target", instanceID,
+		"--document-name", "AWS-StartPortForwardingSessionToRemoteHost",
+		"--parameters", fmt.Sprintf("host=%s,portNumber=%d,localPortNumber=%d", host, remotePort, localPort),
+	)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd
 }

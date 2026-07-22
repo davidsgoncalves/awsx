@@ -32,6 +32,12 @@ func (fakeSSM) OnlineInstanceIDs(context.Context) (map[string]bool, error) {
 	return map[string]bool{"i-1": true}, nil
 }
 
+type fakeRDS struct{}
+
+func (fakeRDS) RDSInstances(context.Context) ([]awsx.RDSInstance, error) {
+	return []awsx.RDSInstance{{Name: "db1", Engine: "postgres", Endpoint: "db1.rds.local", Port: 5432}}, nil
+}
+
 func fakeDeps() Deps {
 	return Deps{
 		Profiles: []profiles.Profile{{Name: "prod", IsSSO: true, Region: "us-east-1"}},
@@ -39,8 +45,8 @@ func fakeDeps() Deps {
 			{Name: "AWS CLI", Binary: "aws", Found: true},
 			{Name: "Session Manager Plugin", Binary: "session-manager-plugin", Found: true},
 		},
-		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
+		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, "us-east-1", nil
 		},
 	}
 }
@@ -80,8 +86,8 @@ func (f fakeLogin) SSOLogin(context.Context) error { *f.called = true; return ni
 func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	called := false
 	d := fakeDeps()
-	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
-		return failIDP{}, fakeEC2{}, fakeSSM{}, "us-east-1", nil
+	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
+		return failIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, "us-east-1", nil
 	}
 	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
 
@@ -123,8 +129,8 @@ func ssoDeps(cleanup func()) Deps {
 			return fakeDiscoverer{}, nil
 		},
 		NewSSOLogin: func(profiles.SSOSession) awsx.Login { return fakeLogin{called: new(bool)} },
-		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.Sessioner, string, func(), error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, nil, "sa-east-1", cleanup, nil
+		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.Sessioner, string, func(), error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, nil, "sa-east-1", cleanup, nil
 		},
 	}
 }
@@ -179,10 +185,10 @@ func TestRoot_SSOFlow_SessionToMenu(t *testing.T) {
 		t.Fatalf("current = %v, want screenMenu", m.current)
 	}
 
-	// quit from menu -> cleanup runs
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // to "Sair"
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	_ = next
+	// quit from menu -> cleanup runs (menu has 3 items; Sair is the third)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if !cleaned {
 		t.Fatal("cleanup was not called on quit")
 	}
@@ -212,11 +218,11 @@ func TestRoot_SSOFlow_NeedLoginGoesToLoginThenRetries(t *testing.T) {
 
 func TestRoot_ProfileWithoutRegionShowsRegionPicker(t *testing.T) {
 	d := fakeDeps()
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -242,11 +248,11 @@ func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
 	st := state.Load()
 	d := fakeDeps()
 	d.State = st
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -256,6 +262,62 @@ func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
 
 	if got := st.Region(state.ProfileKey("prod")); got != "af-south-1" {
 		t.Fatalf("remembered region = %q, want af-south-1", got)
+	}
+}
+
+func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
+	m := NewRoot(fakeDeps())
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+
+	// menu: move to "Acessar banco/serviço (túnel)" and enter
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if !m.tunneling {
+		t.Fatal("expected tunneling true")
+	}
+
+	// rds list arrives -> rds picker
+	m = drive(m, rdsMsg{dbs: []awsx.RDSInstance{{Name: "db1", Endpoint: "db1.rds.local", Port: 5432}}})
+	if m.current != screenRDS {
+		t.Fatalf("current = %v, want screenRDS", m.current)
+	}
+
+	// pick db -> load instances (checking)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking || m.tunnelDB.Name != "db1" {
+		t.Fatalf("after db pick current=%v db=%q", m.current, m.tunnelDB.Name)
+	}
+
+	// targets arrive -> tunnel instance picker (not the shell instance screen)
+	m = drive(m, targetsMsg{targets: []awsx.Target{
+		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running"}, SSMOnline: true},
+	}})
+	if m.current != screenTunnelInstance {
+		t.Fatalf("current = %v, want screenTunnelInstance", m.current)
+	}
+
+	// pick instance -> a port-forward exec command is returned
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected an exec command for the tunnel")
+	}
+}
+
+func TestRoot_NoRDSShowsGuidance(t *testing.T) {
+	m := NewRoot(fakeDeps())
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m.tunneling = true
+	m = drive(m, rdsMsg{dbs: nil})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	if !strings.Contains(m.errorScreen.View(), "Nenhum banco RDS") {
+		t.Fatalf("view missing empty-rds message: %q", m.errorScreen.View())
 	}
 }
 

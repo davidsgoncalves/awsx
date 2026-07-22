@@ -24,7 +24,7 @@ type Deps struct {
 
 	// Profile flow. region is a region override; "" means resolve from the
 	// profile/env (config.ErrNoRegion when none is configured).
-	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error)
+	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error)
 	NewCLI     func(profile, region string) (awsx.Login, awsx.Sessioner)
 
 	// Optional cross-cutting services (nil-safe).
@@ -34,7 +34,7 @@ type Deps struct {
 	// SSO-session flow.
 	NewDiscoverer func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error)
 	NewSSOLogin   func(session profiles.SSOSession) awsx.Login
-	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
+	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
 type rootModel struct {
@@ -48,6 +48,7 @@ type rootModel struct {
 	regionScreen    regionScreen
 	menuScreen      menuScreen
 	instancesScreen instancesScreen
+	rdsScreen       rdsScreen
 	errorScreen     errorScreen
 
 	// Profile / resolved-session state.
@@ -56,8 +57,13 @@ type rootModel struct {
 	idp     awsx.IdentityProvider
 	ec2     awsx.EC2Lister
 	ssm     awsx.SSMLister
+	rds     awsx.RDSLister
 	login   awsx.Login
 	session awsx.Sessioner
+
+	// Tunnel (port-forward) flow state.
+	tunneling bool
+	tunnelDB  awsx.RDSInstance
 
 	// pendingProfile is a profile awaiting a region choice (profile flow).
 	pendingProfile profiles.Profile
@@ -147,7 +153,26 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		m.current = screenInstances
+		if m.tunneling {
+			m.current = screenTunnelInstance
+		} else {
+			m.current = screenInstances
+		}
+		return m, nil
+	case rdsMsg:
+		if len(msg.dbs) == 0 {
+			return m.toError(
+				"Nenhum banco RDS encontrado.",
+				"A região selecionada não tem instâncias RDS, ou o perfil não tem permissão rds:DescribeDBInstances.",
+				[]errorAction{
+					{label: "Voltar para o menu principal", next: screenMenu},
+					{label: "Sair", next: screenQuit},
+				},
+			), nil
+		}
+		m.rdsScreen = newRDSScreen(msg.dbs)
+		m.rdsScreen, _, _ = m.rdsScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.current = screenRDS
 		return m, nil
 	case needLoginMsg:
 		m.current = screenLogin
@@ -183,19 +208,31 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = "Verificando sessão..."
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
+		back := errorAction{label: "Voltar para as instâncias", next: screenInstances}
+		if m.tunneling {
+			back = errorAction{label: "Voltar para os bancos", next: screenRDS}
+		}
 		actions := []errorAction{
-			{label: "Voltar para as instâncias", next: screenInstances},
+			back,
 			{label: "Voltar para o menu principal", next: screenMenu},
 			{label: "Sair", next: screenQuit},
 		}
 		if msg.err != nil {
 			m.deps.Log.Error("ssm session failed for %s (%s) region=%s: %v",
 				m.connectingName, m.connectingID, m.region, msg.err)
-			detail := fmt.Sprintf("Instância: %s (%s)\nRegião: %s\nErro: %v\n\nDetalhes no log: %s",
+			detail := fmt.Sprintf("Alvo: %s (%s)\nRegião: %s\nErro: %v\n\nDetalhes no log: %s",
 				m.connectingName, m.connectingID, m.region, msg.err, logging.Path())
-			return m.toError("Não foi possível abrir a sessão SSM.", detail, actions), nil
+			title := "Não foi possível abrir a sessão SSM."
+			if m.tunneling {
+				title = "Não foi possível abrir o túnel."
+			}
+			return m.toError(title, detail, actions), nil
 		}
-		return m.toError("Sessão encerrada.", "", actions), nil
+		title := "Sessão encerrada."
+		if m.tunneling {
+			title = "Túnel encerrado."
+		}
+		return m.toError(title, "", actions), nil
 	case errMsg:
 		// During the checking phase, an identity failure means the session is
 		// expired/invalid: route to SSO login instead of a generic error.
@@ -274,8 +311,15 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menuScreen, next = m.menuScreen.Update(msg)
 		switch next {
 		case screenInstances:
-			m.current = screenInstances
+			m.tunneling = false
+			m.current = screenChecking
+			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
+		case screenRDS:
+			m.tunneling = true
+			m.current = screenChecking
+			m.loading = "Carregando bancos..."
+			return m, loadRDSCmd(m.rds)
 		case screenQuit:
 			return m.quit()
 		}
@@ -296,6 +340,27 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case screenRDS:
+		var sel *awsx.RDSInstance
+		var cmd tea.Cmd
+		m.rdsScreen, sel, cmd = m.rdsScreen.Update(msg)
+		if sel != nil {
+			m.tunnelDB = *sel
+			m.current = screenChecking
+			m.loading = "Carregando instâncias..."
+			return m, loadTargetsCmd(m.ec2, m.ssm)
+		}
+		return m, cmd
+
+	case screenTunnelInstance:
+		var sel *awsx.Target
+		var cmd tea.Cmd
+		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
+		if sel != nil {
+			return m.startTunnel(*sel)
+		}
+		return m, cmd
+
 	case screenError:
 		var next screen
 		m.errorScreen, next = m.errorScreen.Update(msg)
@@ -310,7 +375,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, tea.Cmd) {
 	m.inSSOFlow = false
 	m.profile = p.Name
-	idp, ec2c, ssmc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
+	idp, ec2c, ssmc, rdsc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
 	if err != nil {
 		if errors.Is(err, config.ErrNoRegion) {
 			m.pendingProfile = p
@@ -328,7 +393,7 @@ func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, 
 	if region != "" {
 		m.remember(state.ProfileKey(p.Name), region)
 	}
-	m.idp, m.ec2, m.ssm, m.region = idp, ec2c, ssmc, resolved
+	m.idp, m.ec2, m.ssm, m.rds, m.region = idp, ec2c, ssmc, rdsc, resolved
 	if m.deps.NewCLI != nil {
 		m.login, m.session = m.deps.NewCLI(p.Name, resolved)
 	}
@@ -352,7 +417,7 @@ func (m rootModel) startSSOSession(s profiles.SSOSession) (tea.Model, tea.Cmd) {
 // startEphemeral builds the ephemeral clients for the chosen account/role/region
 // and resolves identity.
 func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
-	idp, ec2c, ssmc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
+	idp, ec2c, ssmc, rdsc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
 	if err != nil {
 		m.deps.Log.Error("prepare ephemeral creds failed (session=%s account=%s role=%s region=%s): %v",
 			m.ssoSession.Name, m.accountID, m.roleName, region, err)
@@ -362,12 +427,35 @@ func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
 		}), nil
 	}
 	m.remember(state.SSOKey(m.ssoSession.Name, m.accountID, m.roleName), region)
+	m.rds = rdsc
 	m.idp, m.ec2, m.ssm, m.session = idp, ec2c, ssmc, sess
 	m.region = region2
 	m.cleanup = cleanup
 	m.current = screenChecking
 	m.loading = "Verificando sessão..."
 	return m, loadIdentityCmd(m.idp, m.region)
+}
+
+// startTunnel opens an SSM port-forward from a free local port to the chosen
+// RDS endpoint, through the selected instance.
+func (m rootModel) startTunnel(t awsx.Target) (tea.Model, tea.Cmd) {
+	localPort, err := awsx.FreeLocalPort()
+	if err != nil {
+		m.deps.Log.Error("could not find a free local port: %v", err)
+		return m.toError("Não foi possível abrir uma porta local.", err.Error(), []errorAction{
+			{label: "Voltar para o menu principal", next: screenMenu},
+			{label: "Sair", next: screenQuit},
+		}), nil
+	}
+	id := t.ID
+	m.connectingName = fmt.Sprintf("%s via %s", m.tunnelDB.Name, awsx.DisplayName(t.Instance))
+	m.connectingID = id
+	m.deps.Log.Debug("opening ssm tunnel: db=%s (%s:%d) via instance=%s local=%d region=%s",
+		m.tunnelDB.Name, m.tunnelDB.Endpoint, m.tunnelDB.Port, id, localPort, m.region)
+	host, rport := m.tunnelDB.Endpoint, m.tunnelDB.Port
+	return m, tea.ExecProcess(portForwardExec(m.session, id, host, rport, localPort), func(err error) tea.Msg {
+		return sessionEndedMsg{err: err}
+	})
 }
 
 func (m rootModel) discovererFactory() func(ctx context.Context) (awsx.SSODiscoverer, error) {
@@ -395,6 +483,9 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 		return m, nil
 	case screenAccounts:
 		m.current = screenAccounts
+		return m, nil
+	case screenRDS:
+		m.current = screenRDS
 		return m, nil
 	case screenInstances:
 		m.current = screenInstances
@@ -451,8 +542,10 @@ func (m rootModel) View() string {
 		return styleFaint.Render("Abrindo autenticação AWS...")
 	case screenMenu:
 		return m.menuScreen.View()
-	case screenInstances:
+	case screenInstances, screenTunnelInstance:
 		return m.instancesScreen.View()
+	case screenRDS:
+		return m.rdsScreen.View()
 	case screenError:
 		return m.errorScreen.View()
 	}

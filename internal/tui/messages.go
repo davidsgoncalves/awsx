@@ -26,6 +26,7 @@ type needLoginMsg struct{}
 type discovererReadyMsg struct{ d awsx.SSODiscoverer }
 type accountsMsg struct{ accounts []awsx.Account }
 type rolesMsg struct{ roles []awsx.Role }
+type rdsMsg struct{ dbs []awsx.RDSInstance }
 
 // errMsg carries a failed operation. action, when set, is the denied IAM action
 // (e.g. "ec2:DescribeInstances") extracted from the SDK error.
@@ -108,6 +109,18 @@ func loadAccountsCmd(d awsx.SSODiscoverer) tea.Cmd {
 			return errMsg{err: err, action: deniedAction(err, "sso:ListAccounts")}
 		}
 		return accountsMsg{accounts: accts}
+	}
+}
+
+func loadRDSCmd(r awsx.RDSLister) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		dbs, err := r.RDSInstances(ctx)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "rds:DescribeDBInstances")}
+		}
+		return rdsMsg{dbs: dbs}
 	}
 }
 

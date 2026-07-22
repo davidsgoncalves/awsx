@@ -49,12 +49,12 @@ func NewRootCmd() *cobra.Command {
 				Checks:      deps.Check(),
 				Log:         logger,
 				State:       state.Load(),
-				NewClients: func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, string, error) {
+				NewClients: func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
 					c, resolved, err := awsx.NewClients(ctx, profile, region)
 					if err != nil {
-						return nil, nil, nil, "", err
+						return nil, nil, nil, nil, "", err
 					}
-					return c, c, c, resolved, nil
+					return c, c, c, c, resolved, nil
 				},
 				NewCLI: func(profile, region string) (awsx.Login, awsx.Sessioner) {
 					cli := awsx.CLI{Profile: profile, Region: region}
@@ -66,19 +66,19 @@ func NewRootCmd() *cobra.Command {
 				NewSSOLogin: func(session profiles.SSOSession) awsx.Login {
 					return awsx.SSOSessionLogin{Session: session.Name}
 				},
-				NewEphemeral: func(session profiles.SSOSession, accountID, roleName, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.Sessioner, string, func(), error) {
+				NewEphemeral: func(session profiles.SSOSession, accountID, roleName, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.Sessioner, string, func(), error) {
 					eph, err := awsx.WriteEphemeralProfile(session, accountID, roleName, region)
 					if err != nil {
-						return nil, nil, nil, nil, "", nil, err
+						return nil, nil, nil, nil, nil, "", nil, err
 					}
 					clients, resolved, err := eph.Clients(context.Background())
 					if err != nil {
 						_ = eph.Close()
-						return nil, nil, nil, nil, "", nil, err
+						return nil, nil, nil, nil, nil, "", nil, err
 					}
-					sess := awsx.CLI{Profile: eph.Profile, ConfigFile: eph.ConfigPath}
+					sess := awsx.CLI{Profile: eph.Profile, Region: resolved, ConfigFile: eph.ConfigPath}
 					cleanup := func() { _ = eph.Close() }
-					return clients, clients, clients, sess, resolved, cleanup, nil
+					return clients, clients, clients, clients, sess, resolved, cleanup, nil
 				},
 			})
 		},

@@ -8,6 +8,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
 
@@ -19,6 +20,7 @@ type Clients struct {
 	sts *sts.Client
 	ec2 *ec2.Client
 	ssm *ssm.Client
+	rds *rds.Client
 }
 
 // NewClients loads shared config for profile and returns typed clients plus the
@@ -47,6 +49,7 @@ func newClientsFromConfig(cfg awssdk.Config) *Clients {
 		sts: sts.NewFromConfig(cfg),
 		ec2: ec2.NewFromConfig(cfg),
 		ssm: ssm.NewFromConfig(cfg),
+		rds: rds.NewFromConfig(cfg),
 	}
 }
 

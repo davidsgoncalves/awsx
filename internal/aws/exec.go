@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 )
@@ -34,6 +35,18 @@ func ssoSessionLoginArgs(session string) []string {
 	return []string{"sso", "login", "--sso-session", session}
 }
 
+func portForwardArgs(profile, region, instanceID, host string, remotePort, localPort int) []string {
+	args := []string{"ssm", "start-session", "--profile", profile}
+	if region != "" {
+		args = append(args, "--region", region)
+	}
+	return append(args,
+		"--target", instanceID,
+		"--document-name", "AWS-StartPortForwardingSessionToRemoteHost",
+		"--parameters", fmt.Sprintf("host=%s,portNumber=%d,localPortNumber=%d", host, remotePort, localPort),
+	)
+}
+
 // env returns the environment for a child command: the inherited environment
 // plus AWS_CONFIG_FILE when ConfigFile is set, or nil to inherit unchanged.
 func (c CLI) env() []string {
@@ -64,6 +77,18 @@ func (c CLI) StartSession(instanceID string) error {
 // current process, for use with tea.ExecProcess.
 func (c CLI) SessionCommand(instanceID string) *exec.Cmd {
 	cmd := exec.Command("aws", sessionArgs(c.Profile, c.Region, instanceID)...)
+	cmd.Env = c.env()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd
+}
+
+// PortForwardCommand builds an SSM port-forward-to-remote-host command with the
+// TTY wired to the current process, for use with tea.ExecProcess. It tunnels
+// localPort on the loopback interface to host:remotePort through instanceID.
+func (c CLI) PortForwardCommand(instanceID, host string, remotePort, localPort int) *exec.Cmd {
+	cmd := exec.Command("aws", portForwardArgs(c.Profile, c.Region, instanceID, host, remotePort, localPort)...)
 	cmd.Env = c.env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -15,7 +15,12 @@ func TestMenuScreen_SelectEC2AndQuit(t *testing.T) {
 	if next != screenInstances {
 		t.Fatalf("next = %v, want screenInstances", next)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 1 = túnel
+	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next != screenRDS {
+		t.Fatalf("next = %v, want screenRDS", next)
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 2 = Sair
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenQuit {
 		t.Fatalf("next = %v, want screenQuit", next)

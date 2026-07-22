@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -85,6 +87,47 @@ func (s roleScreen) Update(msg tea.Msg) (roleScreen, *awsx.Role, tea.Cmd) {
 }
 
 func (s roleScreen) View() string { return s.list.View() }
+
+// --- rds ---
+
+type rdsItem struct{ db awsx.RDSInstance }
+
+func (i rdsItem) Title() string { return i.db.Name }
+func (i rdsItem) Description() string {
+	return fmt.Sprintf("%s   %s:%d", i.db.Engine, i.db.Endpoint, i.db.Port)
+}
+func (i rdsItem) FilterValue() string {
+	return i.db.Name + " " + i.db.Engine + " " + i.db.Endpoint
+}
+
+type rdsScreen struct{ list list.Model }
+
+func newRDSScreen(dbs []awsx.RDSInstance) rdsScreen {
+	items := make([]list.Item, len(dbs))
+	for i, db := range dbs {
+		items[i] = rdsItem{db: db}
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = "Selecione um banco (RDS)"
+	return rdsScreen{list: l}
+}
+
+func (s rdsScreen) Update(msg tea.Msg) (rdsScreen, *awsx.RDSInstance, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		s.list.SetSize(ws.Width, ws.Height-2)
+	}
+	if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEnter && !s.list.SettingFilter() {
+		if it, ok := s.list.SelectedItem().(rdsItem); ok {
+			db := it.db
+			return s, &db, nil
+		}
+	}
+	var cmd tea.Cmd
+	s.list, cmd = s.list.Update(msg)
+	return s, nil, cmd
+}
+
+func (s rdsScreen) View() string { return s.list.View() }
 
 // --- regions ---
 

@@ -58,7 +58,7 @@ func (l *Logger) Error(format string, args ...any) {
 
 // Debug writes a debug entry only when debug logging is enabled.
 func (l *Logger) Debug(format string, args ...any) {
-	if !l.debug {
+	if l == nil || !l.debug {
 		return
 	}
 	l.write("DEBUG", fmt.Sprintf(format, args...))
