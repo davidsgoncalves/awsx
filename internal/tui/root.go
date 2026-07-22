@@ -62,8 +62,9 @@ type rootModel struct {
 	session awsx.Sessioner
 
 	// Tunnel (port-forward) flow state.
-	tunneling bool
-	tunnelDB  awsx.RDSInstance
+	tunneling      bool
+	tunnelInstance awsx.Target
+	tunnelDB       awsx.RDSInstance
 
 	// pendingProfile is a profile awaiting a region choice (profile flow).
 	pendingProfile profiles.Profile
@@ -154,25 +155,28 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		if m.tunneling {
-			m.instancesScreen.list.Title = fmt.Sprintf("Escolha a instância que fará o túnel até %s", m.tunnelDB.Name)
+			m.instancesScreen.list.Title = "Escolha a instância que fará o túnel (bastion SSM)"
 			m.current = screenTunnelInstance
 		} else {
 			m.current = screenInstances
 		}
 		return m, nil
 	case rdsMsg:
-		if len(msg.dbs) == 0 {
+		dbs := filterDBsByVPC(msg.dbs, m.tunnelInstance.VpcID)
+		if len(dbs) == 0 {
 			return m.toError(
-				"Nenhum banco RDS encontrado.",
-				"A região selecionada não tem instâncias RDS, ou o perfil não tem permissão rds:DescribeDBInstances.",
+				"Nenhum banco alcançável a partir dessa instância.",
+				fmt.Sprintf("Não há RDS na mesma VPC (%s) da instância escolhida, ou falta permissão rds:DescribeDBInstances.", m.tunnelInstance.VpcID),
 				[]errorAction{
+					{label: "Escolher outra instância", next: screenTunnelInstance},
 					{label: "Voltar para o menu principal", next: screenMenu},
 					{label: "Sair", next: screenQuit},
 				},
 			), nil
 		}
-		m.rdsScreen = newRDSScreen(msg.dbs)
+		m.rdsScreen = newRDSScreen(dbs)
 		m.rdsScreen, _, _ = m.rdsScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.rdsScreen.list.Title = fmt.Sprintf("Bancos alcançáveis por %s", awsx.DisplayName(m.tunnelInstance.Instance))
 		m.current = screenRDS
 		return m, nil
 	case needLoginMsg:
@@ -319,8 +323,8 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case screenRDS:
 			m.tunneling = true
 			m.current = screenChecking
-			m.loading = "Carregando bancos..."
-			return m, loadRDSCmd(m.rds)
+			m.loading = "Carregando instâncias..."
+			return m, loadTargetsCmd(m.ec2, m.ssm)
 		case screenQuit:
 			return m.quit()
 		}
@@ -341,22 +345,22 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case screenRDS:
-		var sel *awsx.RDSInstance
-		var cmd tea.Cmd
-		m.rdsScreen, sel, cmd = m.rdsScreen.Update(msg)
-		if sel != nil {
-			m.tunnelDB = *sel
-			m.current = screenChecking
-			m.loading = "Carregando instâncias..."
-			return m, loadTargetsCmd(m.ec2, m.ssm)
-		}
-		return m, cmd
-
 	case screenTunnelInstance:
 		var sel *awsx.Target
 		var cmd tea.Cmd
 		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
+		if sel != nil {
+			m.tunnelInstance = *sel
+			m.current = screenChecking
+			m.loading = "Carregando bancos..."
+			return m, loadRDSCmd(m.rds)
+		}
+		return m, cmd
+
+	case screenRDS:
+		var sel *awsx.RDSInstance
+		var cmd tea.Cmd
+		m.rdsScreen, sel, cmd = m.rdsScreen.Update(msg)
 		if sel != nil {
 			return m.startTunnel(*sel)
 		}
@@ -438,8 +442,9 @@ func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
 }
 
 // startTunnel opens an SSM port-forward from a free local port to the chosen
-// RDS endpoint, through the selected instance.
-func (m rootModel) startTunnel(t awsx.Target) (tea.Model, tea.Cmd) {
+// RDS endpoint, through the already-selected tunnel instance.
+func (m rootModel) startTunnel(db awsx.RDSInstance) (tea.Model, tea.Cmd) {
+	m.tunnelDB = db
 	localPort, err := awsx.FreeLocalPort()
 	if err != nil {
 		m.deps.Log.Error("could not find a free local port: %v", err)
@@ -448,15 +453,29 @@ func (m rootModel) startTunnel(t awsx.Target) (tea.Model, tea.Cmd) {
 			{label: "Sair", next: screenQuit},
 		}), nil
 	}
-	id := t.ID
-	m.connectingName = fmt.Sprintf("%s via %s", m.tunnelDB.Name, awsx.DisplayName(t.Instance))
+	id := m.tunnelInstance.ID
+	m.connectingName = fmt.Sprintf("%s via %s", db.Name, awsx.DisplayName(m.tunnelInstance.Instance))
 	m.connectingID = id
 	m.deps.Log.Debug("opening ssm tunnel: db=%s (%s:%d) via instance=%s local=%d region=%s",
-		m.tunnelDB.Name, m.tunnelDB.Endpoint, m.tunnelDB.Port, id, localPort, m.region)
-	host, rport := m.tunnelDB.Endpoint, m.tunnelDB.Port
-	return m, tea.ExecProcess(portForwardExec(m.session, id, host, rport, localPort), func(err error) tea.Msg {
+		db.Name, db.Endpoint, db.Port, id, localPort, m.region)
+	return m, tea.ExecProcess(portForwardExec(m.session, id, db.Endpoint, db.Port, localPort), func(err error) tea.Msg {
 		return sessionEndedMsg{err: err}
 	})
+}
+
+// filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.
+// If the instance has no VPC (unusual), all databases are returned.
+func filterDBsByVPC(dbs []awsx.RDSInstance, vpcID string) []awsx.RDSInstance {
+	if vpcID == "" {
+		return dbs
+	}
+	var out []awsx.RDSInstance
+	for _, db := range dbs {
+		if db.VpcID == vpcID {
+			out = append(out, db)
+		}
+	}
+	return out
 }
 
 func (m rootModel) discovererFactory() func(ctx context.Context) (awsx.SSODiscoverer, error) {

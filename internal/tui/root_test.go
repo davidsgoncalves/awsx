@@ -23,7 +23,7 @@ func (fakeIDP) WhoAmI(context.Context) (awsx.Identity, error) {
 type fakeEC2 struct{}
 
 func (fakeEC2) RunningInstances(context.Context) ([]awsx.Instance, error) {
-	return []awsx.Instance{{ID: "i-1", Name: "api", State: "running", Type: "t3.large", PrivateIP: "10.0.1.15"}}, nil
+	return []awsx.Instance{{ID: "i-1", Name: "api", State: "running", Type: "t3.large", PrivateIP: "10.0.1.15", VpcID: "vpc-1"}}, nil
 }
 
 type fakeSSM struct{}
@@ -35,7 +35,10 @@ func (fakeSSM) OnlineInstanceIDs(context.Context) (map[string]bool, error) {
 type fakeRDS struct{}
 
 func (fakeRDS) RDSInstances(context.Context) ([]awsx.RDSInstance, error) {
-	return []awsx.RDSInstance{{Name: "db1", Engine: "postgres", Endpoint: "db1.rds.local", Port: 5432}}, nil
+	return []awsx.RDSInstance{
+		{Name: "db1", Engine: "postgres", Endpoint: "db1.rds.local", Port: 5432, VpcID: "vpc-1"},
+		{Name: "db2", Engine: "mysql", Endpoint: "db2.rds.local", Port: 3306, VpcID: "vpc-2"},
+	}, nil
 }
 
 func fakeDeps() Deps {
@@ -281,30 +284,33 @@ func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
 		t.Fatal("expected tunneling true")
 	}
 
-	// rds list arrives -> rds picker
-	m = drive(m, rdsMsg{dbs: []awsx.RDSInstance{{Name: "db1", Endpoint: "db1.rds.local", Port: 5432}}})
-	if m.current != screenRDS {
-		t.Fatalf("current = %v, want screenRDS", m.current)
-	}
-
-	// pick db -> load instances (checking)
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.current != screenChecking || m.tunnelDB.Name != "db1" {
-		t.Fatalf("after db pick current=%v db=%q", m.current, m.tunnelDB.Name)
-	}
-
-	// targets arrive -> tunnel instance picker (not the shell instance screen)
+	// instances arrive first -> tunnel instance picker
 	m = drive(m, targetsMsg{targets: []awsx.Target{
-		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running"}, SSMOnline: true},
+		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running", VpcID: "vpc-1"}, SSMOnline: true},
 	}})
 	if m.current != screenTunnelInstance {
 		t.Fatalf("current = %v, want screenTunnelInstance", m.current)
 	}
-	if !strings.Contains(m.instancesScreen.list.Title, "db1") {
-		t.Fatalf("tunnel instance title should name the db: %q", m.instancesScreen.list.Title)
+
+	// pick instance -> load databases (checking)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking || m.tunnelInstance.ID != "i-1" {
+		t.Fatalf("after instance pick current=%v instance=%q", m.current, m.tunnelInstance.ID)
 	}
 
-	// pick instance -> a port-forward exec command is returned
+	// rds list arrives -> filtered to same VPC (vpc-1) -> rds picker
+	m = drive(m, rdsMsg{dbs: []awsx.RDSInstance{
+		{Name: "db1", Endpoint: "db1.rds.local", Port: 5432, VpcID: "vpc-1"},
+		{Name: "db2", Endpoint: "db2.rds.local", Port: 3306, VpcID: "vpc-2"},
+	}})
+	if m.current != screenRDS {
+		t.Fatalf("current = %v, want screenRDS", m.current)
+	}
+	if len(m.rdsScreen.list.Items()) != 1 {
+		t.Fatalf("expected only same-VPC db (1), got %d", len(m.rdsScreen.list.Items()))
+	}
+
+	// pick db -> a port-forward exec command is returned
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
 		t.Fatal("expected an exec command for the tunnel")
@@ -315,12 +321,13 @@ func TestRoot_NoRDSShowsGuidance(t *testing.T) {
 	m := NewRoot(fakeDeps())
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m.tunneling = true
-	m = drive(m, rdsMsg{dbs: nil})
+	m.tunnelInstance = awsx.Target{Instance: awsx.Instance{ID: "i-9", VpcID: "vpc-empty"}}
+	m = drive(m, rdsMsg{dbs: []awsx.RDSInstance{{Name: "db1", VpcID: "vpc-other"}}})
 	if m.current != screenError {
 		t.Fatalf("current = %v, want screenError", m.current)
 	}
-	if !strings.Contains(m.errorScreen.View(), "Nenhum banco RDS") {
-		t.Fatalf("view missing empty-rds message: %q", m.errorScreen.View())
+	if !strings.Contains(m.errorScreen.View(), "Nenhum banco alcançável") {
+		t.Fatalf("view missing empty message: %q", m.errorScreen.View())
 	}
 }
 

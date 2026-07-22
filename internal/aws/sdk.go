@@ -88,6 +88,7 @@ func (c *Clients) RunningInstances(ctx context.Context) ([]Instance, error) {
 					State:     string(inst.State.Name),
 					Type:      string(inst.InstanceType),
 					PrivateIP: deref(inst.PrivateIpAddress),
+					VpcID:     deref(inst.VpcId),
 				})
 			}
 		}

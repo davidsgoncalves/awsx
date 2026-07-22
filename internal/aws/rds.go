@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/aws/aws-sdk-go-v2/service/rds"
+	rdstypes "github.com/aws/aws-sdk-go-v2/service/rds/types"
 )
 
 // RDSInstances implements RDSLister. It lists database instances that have a
@@ -26,6 +27,7 @@ func (c *Clients) RDSInstances(ctx context.Context) ([]RDSInstance, error) {
 				Engine:   deref(db.Engine),
 				Endpoint: deref(db.Endpoint.Address),
 				Port:     int(portOf(db.Endpoint.Port)),
+				VpcID:    vpcOf(db),
 			})
 		}
 	}
@@ -38,4 +40,11 @@ func portOf(p *int32) int32 {
 		return 0
 	}
 	return *p
+}
+
+func vpcOf(db rdstypes.DBInstance) string {
+	if db.DBSubnetGroup == nil {
+		return ""
+	}
+	return deref(db.DBSubnetGroup.VpcId)
 }

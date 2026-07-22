@@ -20,6 +20,7 @@ type Instance struct {
 	State     string
 	Type      string
 	PrivateIP string
+	VpcID     string
 }
 
 // Target is an instance that can receive an SSM session.
@@ -49,6 +50,7 @@ type RDSInstance struct {
 	Engine   string
 	Endpoint string
 	Port     int
+	VpcID    string
 }
 
 // RDSLister lists the RDS database instances in the resolved region.
