@@ -280,8 +280,8 @@ func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
 	// menu: move to "Acessar banco/serviço (túnel)" and enter
 	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if !m.tunneling {
-		t.Fatal("expected tunneling true")
+	if m.flow != flowTunnel {
+		t.Fatalf("flow = %v, want flowTunnel", m.flow)
 	}
 
 	// instances arrive first -> tunnel instance picker
@@ -320,7 +320,7 @@ func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
 func TestRoot_NoRDSShowsGuidance(t *testing.T) {
 	m := NewRoot(fakeDeps())
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m.tunneling = true
+	m.flow = flowTunnel
 	m.tunnelInstance = awsx.Target{Instance: awsx.Instance{ID: "i-9", VpcID: "vpc-empty"}}
 	m = drive(m, rdsMsg{dbs: []awsx.RDSInstance{{Name: "db1", VpcID: "vpc-other"}}})
 	if m.current != screenError {

@@ -37,6 +37,16 @@ type Deps struct {
 	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
+// flow is which main-menu action is in progress. It decides how the shared
+// instance-picker screen is labelled and where the flow goes next.
+type flow int
+
+const (
+	flowSession flow = iota // Acessar EC2
+	flowTunnel              // Acessar banco/serviço (túnel)
+	flowExec                // Rodar comando
+)
+
 type rootModel struct {
 	deps    Deps
 	current screen
@@ -61,8 +71,8 @@ type rootModel struct {
 	login   awsx.Login
 	session awsx.Sessioner
 
-	// Tunnel (port-forward) flow state.
-	tunneling      bool
+	// Flow state.
+	flow           flow
 	tunnelInstance awsx.Target
 	tunnelDB       awsx.RDSInstance
 
@@ -154,7 +164,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		if m.tunneling {
+		if m.flow == flowTunnel {
 			m.instancesScreen.list.Title = "Escolha a instância que fará o túnel (bastion SSM)"
 			m.current = screenTunnelInstance
 		} else {
@@ -214,7 +224,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
 		back := errorAction{label: "Voltar para as instâncias", next: screenInstances}
-		if m.tunneling {
+		if m.flow == flowTunnel {
 			back = errorAction{label: "Voltar para os bancos", next: screenRDS}
 		}
 		actions := []errorAction{
@@ -232,13 +242,13 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			detail := fmt.Sprintf("Alvo: %s (%s)\nRegião: %s\nErro: %s\n\nDetalhes no log: %s",
 				m.connectingName, m.connectingID, m.region, awsErr, logging.Path())
 			title := "Não foi possível abrir a sessão SSM."
-			if m.tunneling {
+			if m.flow == flowTunnel {
 				title = "Não foi possível abrir o túnel."
 			}
 			return m.toError(title, detail, actions), nil
 		}
 		title := "Sessão encerrada."
-		if m.tunneling {
+		if m.flow == flowTunnel {
 			title = "Túnel encerrado."
 		}
 		return m.toError(title, "", actions), nil
@@ -323,12 +333,12 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.menuScreen, next = m.menuScreen.Update(msg)
 		switch next {
 		case screenInstances:
-			m.tunneling = false
+			m.flow = flowSession
 			m.current = screenChecking
 			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
 		case screenRDS:
-			m.tunneling = true
+			m.flow = flowTunnel
 			m.current = screenChecking
 			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
