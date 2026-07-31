@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -48,8 +49,8 @@ func fakeDeps() Deps {
 			{Name: "AWS CLI", Binary: "aws", Found: true},
 			{Name: "Session Manager Plugin", Binary: "session-manager-plugin", Found: true},
 		},
-		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, "us-east-1", nil
+		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, "us-east-1", nil
 		},
 	}
 }
@@ -89,8 +90,8 @@ func (f fakeLogin) SSOLogin(context.Context) error { *f.called = true; return ni
 func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	called := false
 	d := fakeDeps()
-	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
-		return failIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, "us-east-1", nil
+	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
+		return failIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, "us-east-1", nil
 	}
 	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
 
@@ -132,8 +133,8 @@ func ssoDeps(cleanup func()) Deps {
 			return fakeDiscoverer{}, nil
 		},
 		NewSSOLogin: func(profiles.SSOSession) awsx.Login { return fakeLogin{called: new(bool)} },
-		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.Sessioner, string, func(), error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, nil, "sa-east-1", cleanup, nil
+		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.Sessioner, string, func(), error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, nil, "sa-east-1", cleanup, nil
 		},
 	}
 }
@@ -222,11 +223,11 @@ func TestRoot_SSOFlow_NeedLoginGoesToLoginThenRetries(t *testing.T) {
 
 func TestRoot_ProfileWithoutRegionShowsRegionPicker(t *testing.T) {
 	d := fakeDeps()
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -252,11 +253,11 @@ func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
 	st := state.Load()
 	d := fakeDeps()
 	d.State = st
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -355,5 +356,178 @@ func TestRoot_SelectProfileThenIdentityShowsMenu(t *testing.T) {
 	m = drive(m, identityMsg{id: awsx.Identity{Account: "123"}, region: "us-east-1"})
 	if m.current != screenMenu {
 		t.Fatalf("after identity current = %v, want screenMenu", m.current)
+	}
+}
+
+type fakeContainers struct{}
+
+func (fakeContainers) Containers(context.Context, string) ([]awsx.Container, error) {
+	return []awsx.Container{
+		{ID: "abc", Name: "myapp-web-1", Service: "web", Image: "ruby:3.2", Status: "Up 3 days"},
+	}, nil
+}
+
+// menuToRunCommand drives a fresh model to the instance picker of the
+// "Rodar comando" flow.
+func menuToRunCommand(t *testing.T, d Deps) rootModel {
+	t.Helper()
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
+
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // túnel
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // Rodar comando
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.flow != flowExec {
+		t.Fatalf("flow = %v, want flowExec", m.flow)
+	}
+	return m
+}
+
+func TestRoot_ExecFlow_InstanceToContainerToCommand(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+
+	// instances arrive -> exec instance picker
+	m = drive(m, targetsMsg{targets: []awsx.Target{
+		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running", VpcID: "vpc-1"}, SSMOnline: true},
+	}})
+	if m.current != screenExecInstance {
+		t.Fatalf("current = %v, want screenExecInstance", m.current)
+	}
+
+	// pick instance -> loading containers
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenChecking || m.execInstance.ID != "i-1" {
+		t.Fatalf("current=%v instance=%q", m.current, m.execInstance.ID)
+	}
+
+	// containers arrive -> container picker
+	m = drive(m, containersMsg{containers: []awsx.Container{
+		{ID: "abc", Name: "myapp-web-1", Service: "web", Image: "ruby:3.2", Status: "Up 3 days"},
+	}})
+	if m.current != screenContainers {
+		t.Fatalf("current = %v, want screenContainers", m.current)
+	}
+
+	// pick container -> command screen
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenCommand {
+		t.Fatalf("current = %v, want screenCommand", m.current)
+	}
+	if m.execContainer.Name != "myapp-web-1" {
+		t.Fatalf("container = %q", m.execContainer.Name)
+	}
+
+	// type a command and submit -> an exec command is returned
+	for _, r := range "bash" {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected an exec command")
+	}
+}
+
+func TestRoot_ExecFlow_RemembersCommand(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	d := fakeDeps()
+	d.State = st
+
+	m := menuToRunCommand(t, d)
+	m = drive(m, targetsMsg{targets: []awsx.Target{
+		{Instance: awsx.Instance{ID: "i-1", Name: "api", VpcID: "vpc-1"}, SSMOnline: true},
+	}})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, containersMsg{containers: []awsx.Container{
+		{ID: "abc", Name: "myapp-web-1", Service: "web"},
+	}})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // pick container
+	for _, r := range "rails c" {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	got := st.CommandHistory(state.ContainerKey("web"))
+	if len(got) != 1 || got[0] != "rails c" {
+		t.Fatalf("history = %v, want [rails c]", got)
+	}
+}
+
+func TestRoot_ExecFlow_NoContainersShowsGuidance(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+	m.execInstance = awsx.Target{Instance: awsx.Instance{ID: "i-1", Name: "api"}}
+
+	m = drive(m, containersMsg{containers: nil})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	if !strings.Contains(m.errorScreen.View(), "Nenhum container") {
+		t.Fatalf("view missing empty message: %q", m.errorScreen.View())
+	}
+}
+
+func TestRoot_ExecFlow_EscFromCommandGoesBackToContainers(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+	m = drive(m, targetsMsg{targets: []awsx.Target{
+		{Instance: awsx.Instance{ID: "i-1", Name: "api", VpcID: "vpc-1"}, SSMOnline: true},
+	}})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, containersMsg{containers: []awsx.Container{{ID: "abc", Name: "myapp-web-1", Service: "web"}}})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenContainers {
+		t.Fatalf("current = %v, want screenContainers", m.current)
+	}
+}
+
+func TestRoot_ExecFlow_SessionEndReturnsToCommandScreen(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+	m.execContainer = awsx.Container{Name: "myapp-web-1", Service: "web"}
+
+	m = drive(m, sessionEndedMsg{})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	v := m.errorScreen.View()
+	if !strings.Contains(v, "Voltar para o comando") {
+		t.Fatalf("missing back-to-command action: %q", v)
+	}
+}
+
+func TestRoot_ExecFlow_ListingDeniedOffersManualCommand(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+	m.execInstance = awsx.Target{Instance: awsx.Instance{ID: "i-1", Name: "api"}}
+
+	m = drive(m, errMsg{err: errors.New("denied"), action: "ssm:SendCommand"})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	v := m.errorScreen.View()
+	if !strings.Contains(v, "ssm:SendCommand") {
+		t.Fatalf("error does not name the permission: %q", v)
+	}
+	if !strings.Contains(v, "Digitar o comando à mão") {
+		t.Fatalf("error does not offer the manual fallback: %q", v)
+	}
+}
+
+func TestRoot_ExecFlow_ManualFallbackOpensFullLineCommandScreen(t *testing.T) {
+	m := menuToRunCommand(t, fakeDeps())
+	m.execInstance = awsx.Target{Instance: awsx.Instance{ID: "i-1", Name: "api"}}
+	m = drive(m, errMsg{err: errors.New("denied"), action: "ssm:SendCommand"})
+
+	// The manual fallback is the first action on the error screen.
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenCommand {
+		t.Fatalf("current = %v, want screenCommand", m.current)
+	}
+	if !m.commandScreen.fullLineMode() {
+		t.Fatal("expected the manual screen to start in full-line mode")
+	}
+	if !strings.Contains(m.commandScreen.View(), "api") {
+		t.Fatalf("manual screen does not name the instance: %q", m.commandScreen.View())
 	}
 }

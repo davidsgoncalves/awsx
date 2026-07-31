@@ -24,7 +24,7 @@ type Deps struct {
 
 	// Profile flow. region is a region override; "" means resolve from the
 	// profile/env (config.ErrNoRegion when none is configured).
-	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, string, error)
+	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error)
 	NewCLI     func(profile, region string) (awsx.Login, awsx.Sessioner)
 
 	// Optional cross-cutting services (nil-safe).
@@ -34,7 +34,7 @@ type Deps struct {
 	// SSO-session flow.
 	NewDiscoverer func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error)
 	NewSSOLogin   func(session profiles.SSOSession) awsx.Login
-	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
+	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, containers awsx.ContainerLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
 // flow is which main-menu action is in progress. It decides how the shared
@@ -56,25 +56,32 @@ type rootModel struct {
 	accountScreen   accountScreen
 	roleScreen      roleScreen
 	regionScreen    regionScreen
-	menuScreen      menuScreen
-	instancesScreen instancesScreen
-	rdsScreen       rdsScreen
-	errorScreen     errorScreen
+	menuScreen       menuScreen
+	instancesScreen  instancesScreen
+	rdsScreen        rdsScreen
+	containersScreen containersScreen
+	commandScreen    commandScreen
+	errorScreen      errorScreen
 
 	// Profile / resolved-session state.
 	profile string
 	region  string
-	idp     awsx.IdentityProvider
-	ec2     awsx.EC2Lister
-	ssm     awsx.SSMLister
-	rds     awsx.RDSLister
-	login   awsx.Login
-	session awsx.Sessioner
+	idp        awsx.IdentityProvider
+	ec2        awsx.EC2Lister
+	ssm        awsx.SSMLister
+	rds        awsx.RDSLister
+	containers awsx.ContainerLister
+	login      awsx.Login
+	session    awsx.Sessioner
 
 	// Flow state.
 	flow           flow
 	tunnelInstance awsx.Target
 	tunnelDB       awsx.RDSInstance
+
+	// Exec (run-command) flow state.
+	execInstance  awsx.Target
+	execContainer awsx.Container
 
 	// pendingProfile is a profile awaiting a region choice (profile flow).
 	pendingProfile profiles.Profile
@@ -164,10 +171,14 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		if m.flow == flowTunnel {
+		switch m.flow {
+		case flowTunnel:
 			m.instancesScreen.list.Title = "Escolha a instância que fará o túnel (bastion SSM)"
 			m.current = screenTunnelInstance
-		} else {
+		case flowExec:
+			m.instancesScreen.list.Title = "Escolha a instância que roda o container"
+			m.current = screenExecInstance
+		default:
 			m.current = screenInstances
 		}
 		return m, nil
@@ -188,6 +199,24 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.rdsScreen, _, _ = m.rdsScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m.rdsScreen.list.Title = fmt.Sprintf("Bancos alcançáveis por %s", awsx.DisplayName(m.tunnelInstance.Instance))
 		m.current = screenRDS
+		return m, nil
+	case containersMsg:
+		if len(msg.containers) == 0 {
+			return m.toError(
+				"Nenhum container em execução nessa instância.",
+				fmt.Sprintf("`docker ps` não retornou nada em %s (%s). A instância pode não rodar containers, ou o Docker pode estar parado.",
+					awsx.DisplayName(m.execInstance.Instance), m.execInstance.ID),
+				[]errorAction{
+					{label: "Escolher outra instância", next: screenExecInstance},
+					{label: "Voltar para o menu principal", next: screenMenu},
+					{label: "Sair", next: screenQuit},
+				},
+			), nil
+		}
+		m.containersScreen = newContainersScreen(msg.containers)
+		m.containersScreen, _, _ = m.containersScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.containersScreen.list.Title = fmt.Sprintf("Containers em %s", awsx.DisplayName(m.execInstance.Instance))
+		m.current = screenContainers
 		return m, nil
 	case needLoginMsg:
 		m.current = screenLogin
@@ -224,8 +253,11 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
 		back := errorAction{label: "Voltar para as instâncias", next: screenInstances}
-		if m.flow == flowTunnel {
+		switch m.flow {
+		case flowTunnel:
 			back = errorAction{label: "Voltar para os bancos", next: screenRDS}
+		case flowExec:
+			back = errorAction{label: "Voltar para o comando", next: screenCommand}
 		}
 		actions := []errorAction{
 			back,
@@ -242,17 +274,44 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			detail := fmt.Sprintf("Alvo: %s (%s)\nRegião: %s\nErro: %s\n\nDetalhes no log: %s",
 				m.connectingName, m.connectingID, m.region, awsErr, logging.Path())
 			title := "Não foi possível abrir a sessão SSM."
-			if m.flow == flowTunnel {
+			switch m.flow {
+			case flowTunnel:
 				title = "Não foi possível abrir o túnel."
+			case flowExec:
+				title = "Não foi possível rodar o comando."
 			}
 			return m.toError(title, detail, actions), nil
 		}
 		title := "Sessão encerrada."
-		if m.flow == flowTunnel {
+		switch m.flow {
+		case flowTunnel:
 			title = "Túnel encerrado."
+		case flowExec:
+			title = "Comando encerrado."
 		}
 		return m.toError(title, "", actions), nil
 	case errMsg:
+		// A failure while listing containers is recoverable: the command can
+		// still be typed by hand. This must come before the login check below,
+		// which would otherwise treat it as an expired session.
+		if m.flow == flowExec && m.current == screenChecking && m.execContainer.Name == "" {
+			m.deps.Log.Error("listing containers on %s failed: %v", m.execInstance.ID, msg.err)
+			var detail string
+			if msg.action != "" {
+				detail = "Permissão necessária: " + msg.action + "\n\n"
+			}
+			if msg.err != nil {
+				detail += msg.err.Error()
+			}
+			detail += "\n\nDetalhes no log: " + logging.Path()
+			m.commandScreen = newManualCommandScreen(awsx.DisplayName(m.execInstance.Instance))
+			return m.toError("Não foi possível listar os containers.", detail, []errorAction{
+				{label: "Digitar o comando à mão", next: screenCommand},
+				{label: "Escolher outra instância", next: screenExecInstance},
+				{label: "Voltar para o menu principal", next: screenMenu},
+				{label: "Sair", next: screenQuit},
+			}), nil
+		}
 		// During the checking phase, an identity failure means the session is
 		// expired/invalid: route to SSO login instead of a generic error.
 		if m.current == screenChecking && m.login != nil {
@@ -342,6 +401,12 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenChecking
 			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
+		case screenExecInstance:
+			m.flow = flowExec
+			m.execContainer = awsx.Container{}
+			m.current = screenChecking
+			m.loading = "Carregando instâncias..."
+			return m, loadTargetsCmd(m.ec2, m.ssm)
 		case screenQuit:
 			return m.quit()
 		}
@@ -381,6 +446,49 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case screenExecInstance:
+		var sel *awsx.Target
+		var cmd tea.Cmd
+		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
+		if sel != nil {
+			m.execInstance = *sel
+			// Clear any container from a previous round so a listing failure
+			// is recognised as such.
+			m.execContainer = awsx.Container{}
+			m.current = screenChecking
+			m.loading = "Carregando containers..."
+			return m, loadContainersCmd(m.containers, sel.ID)
+		}
+		return m, cmd
+
+	case screenContainers:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.containersScreen.list.SettingFilter() {
+			m.current = screenExecInstance
+			return m, nil
+		}
+		var sel *awsx.Container
+		var cmd tea.Cmd
+		m.containersScreen, sel, cmd = m.containersScreen.Update(msg)
+		if sel != nil {
+			m.execContainer = *sel
+			m.commandScreen = newCommandScreen(*sel, m.commandHistory(*sel))
+			m.current = screenCommand
+		}
+		return m, cmd
+
+	case screenCommand:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
+			m.current = screenContainers
+			return m, nil
+		}
+		var sub *commandSubmit
+		var cmd tea.Cmd
+		m.commandScreen, sub, cmd = m.commandScreen.Update(msg)
+		if sub != nil {
+			return m.startExec(*sub)
+		}
+		return m, cmd
+
 	case screenError:
 		var next screen
 		m.errorScreen, next = m.errorScreen.Update(msg)
@@ -395,7 +503,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, tea.Cmd) {
 	m.inSSOFlow = false
 	m.profile = p.Name
-	idp, ec2c, ssmc, rdsc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
+	idp, ec2c, ssmc, rdsc, contc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
 	if err != nil {
 		if errors.Is(err, config.ErrNoRegion) {
 			m.pendingProfile = p
@@ -413,7 +521,7 @@ func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, 
 	if region != "" {
 		m.remember(state.ProfileKey(p.Name), region)
 	}
-	m.idp, m.ec2, m.ssm, m.rds, m.region = idp, ec2c, ssmc, rdsc, resolved
+	m.idp, m.ec2, m.ssm, m.rds, m.containers, m.region = idp, ec2c, ssmc, rdsc, contc, resolved
 	if m.deps.NewCLI != nil {
 		m.login, m.session = m.deps.NewCLI(p.Name, resolved)
 	}
@@ -437,7 +545,7 @@ func (m rootModel) startSSOSession(s profiles.SSOSession) (tea.Model, tea.Cmd) {
 // startEphemeral builds the ephemeral clients for the chosen account/role/region
 // and resolves identity.
 func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
-	idp, ec2c, ssmc, rdsc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
+	idp, ec2c, ssmc, rdsc, contc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
 	if err != nil {
 		m.deps.Log.Error("prepare ephemeral creds failed (session=%s account=%s role=%s region=%s): %v",
 			m.ssoSession.Name, m.accountID, m.roleName, region, err)
@@ -447,7 +555,7 @@ func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
 		}), nil
 	}
 	m.remember(state.SSOKey(m.ssoSession.Name, m.accountID, m.roleName), region)
-	m.rds = rdsc
+	m.rds, m.containers = rdsc, contc
 	m.idp, m.ec2, m.ssm, m.session = idp, ec2c, ssmc, sess
 	m.region = region2
 	m.cleanup = cleanup
@@ -475,6 +583,32 @@ func (m rootModel) startTunnel(db awsx.RDSInstance) (tea.Model, tea.Cmd) {
 		db.Name, db.Endpoint, db.Port, id, localPort, m.region)
 
 	return m, execWithCapture(portForwardExec(m.session, id, db.Endpoint, db.Port, localPort))
+}
+
+// commandHistory returns the remembered commands for a container.
+func (m rootModel) commandHistory(c awsx.Container) []string {
+	if m.deps.State == nil {
+		return nil
+	}
+	return m.deps.State.CommandHistory(state.ContainerKey(awsx.DisplayContainer(c)))
+}
+
+// startExec runs the confirmed command inside the chosen container, recording
+// it in the per-container history first.
+func (m rootModel) startExec(sub commandSubmit) (tea.Model, tea.Cmd) {
+	if sub.Inner != "" && m.deps.State != nil {
+		m.deps.State.PushCommand(state.ContainerKey(awsx.DisplayContainer(m.execContainer)), sub.Inner)
+		if err := m.deps.State.Save(); err != nil {
+			m.deps.Log.Error("could not save state: %v", err)
+		}
+	}
+	id := m.execInstance.ID
+	m.connectingName = fmt.Sprintf("%s em %s", awsx.DisplayContainer(m.execContainer), awsx.DisplayName(m.execInstance.Instance))
+	m.connectingID = id
+	m.deps.Log.Debug("running command: instance=%s container=%s region=%s line=%q",
+		id, m.execContainer.Name, m.region, sub.Line)
+
+	return m, execWithCapture(interactiveExec(m.session, id, sub.Line))
 }
 
 // filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.
@@ -524,6 +658,15 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 	case screenInstances:
 		m.current = screenInstances
 		return m, loadTargetsCmd(m.ec2, m.ssm)
+	case screenExecInstance:
+		m.current = screenExecInstance
+		return m, loadTargetsCmd(m.ec2, m.ssm)
+	case screenContainers:
+		m.current = screenContainers
+		return m, nil
+	case screenCommand:
+		m.current = screenCommand
+		return m, nil
 	case screenMenu:
 		m.current = screenMenu
 		return m, nil
@@ -576,10 +719,14 @@ func (m rootModel) View() string {
 		return styleFaint.Render("Abrindo autenticação AWS...")
 	case screenMenu:
 		return m.menuScreen.View()
-	case screenInstances, screenTunnelInstance:
+	case screenInstances, screenTunnelInstance, screenExecInstance:
 		return m.instancesScreen.View()
 	case screenRDS:
 		return m.rdsScreen.View()
+	case screenContainers:
+		return m.containersScreen.View()
+	case screenCommand:
+		return m.commandScreen.View()
 	case screenError:
 		return m.errorScreen.View()
 	}
