@@ -2,6 +2,7 @@ package aws
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -47,6 +48,28 @@ func portForwardArgs(profile, region, instanceID, host string, remotePort, local
 	)
 }
 
+// interactiveCommandArgs builds the start-session invocation that runs a single
+// command with a TTY attached. Parameters are JSON-encoded rather than using
+// the AWS CLI key=value shorthand: the shorthand splits values on commas, which
+// would silently break any command containing one.
+func interactiveCommandArgs(profile, region, instanceID, command string) []string {
+	args := []string{"ssm", "start-session", "--profile", profile}
+	if region != "" {
+		args = append(args, "--region", region)
+	}
+	params, err := json.Marshal(map[string][]string{"command": {command}})
+	if err != nil {
+		// Marshalling a map of strings cannot fail; fall back to the raw
+		// command rather than dropping the parameter entirely.
+		params = []byte(`{"command":[""]}`)
+	}
+	return append(args,
+		"--target", instanceID,
+		"--document-name", "AWS-StartInteractiveCommand",
+		"--parameters", string(params),
+	)
+}
+
 // env returns the environment for a child command: the inherited environment
 // plus AWS_CONFIG_FILE when ConfigFile is set, or nil to inherit unchanged.
 func (c CLI) env() []string {
@@ -89,6 +112,18 @@ func (c CLI) SessionCommand(instanceID string) *exec.Cmd {
 // localPort on the loopback interface to host:remotePort through instanceID.
 func (c CLI) PortForwardCommand(instanceID, host string, remotePort, localPort int) *exec.Cmd {
 	cmd := exec.Command("aws", portForwardArgs(c.Profile, c.Region, instanceID, host, remotePort, localPort)...)
+	cmd.Env = c.env()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd
+}
+
+// InteractiveCommand builds an SSM start-session command that runs command on
+// instanceID with a TTY, with the terminal wired to the current process for use
+// with tea.ExecProcess.
+func (c CLI) InteractiveCommand(instanceID, command string) *exec.Cmd {
+	cmd := exec.Command("aws", interactiveCommandArgs(c.Profile, c.Region, instanceID, command)...)
 	cmd.Env = c.env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

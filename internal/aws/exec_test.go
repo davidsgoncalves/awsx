@@ -56,6 +56,55 @@ func TestPortForwardArgs_NoRegion(t *testing.T) {
 	}
 }
 
+func TestInteractiveCommandArgs(t *testing.T) {
+	got := interactiveCommandArgs("prod", "sa-east-1", "i-1", "sudo docker exec -it web rails c")
+	want := []string{
+		"ssm", "start-session", "--profile", "prod", "--region", "sa-east-1",
+		"--target", "i-1",
+		"--document-name", "AWS-StartInteractiveCommand",
+		"--parameters", `{"command":["sudo docker exec -it web rails c"]}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+func TestInteractiveCommandArgs_NoRegion(t *testing.T) {
+	got := interactiveCommandArgs("prod", "", "i-1", "bash")
+	want := []string{
+		"ssm", "start-session", "--profile", "prod",
+		"--target", "i-1",
+		"--document-name", "AWS-StartInteractiveCommand",
+		"--parameters", `{"command":["bash"]}`,
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+}
+
+// A comma in the command would be read as a list separator by the AWS CLI's
+// key=value shorthand, silently splitting it into two parameters. JSON encoding
+// is what keeps the command intact.
+func TestInteractiveCommandArgs_CommandWithCommaStaysOneParameter(t *testing.T) {
+	got := interactiveCommandArgs("prod", "", "i-1", `rails runner "puts [1,2]"`)
+	want := `{"command":["rails runner \"puts [1,2]\""]}`
+	if got[len(got)-1] != want {
+		t.Fatalf("parameters = %s, want %s", got[len(got)-1], want)
+	}
+}
+
+func TestInteractiveCommand_WithConfigFile(t *testing.T) {
+	c := CLI{Profile: "_awsx", ConfigFile: "/tmp/awsx/config"}
+	cmd := c.InteractiveCommand("i-1", "bash")
+
+	if !slices.Contains(cmd.Args, "AWS-StartInteractiveCommand") {
+		t.Fatalf("args missing document name: %v", cmd.Args)
+	}
+	if !slices.Contains(cmd.Env, "AWS_CONFIG_FILE=/tmp/awsx/config") {
+		t.Fatalf("AWS_CONFIG_FILE not set in env: %v", cmd.Env)
+	}
+}
+
 func TestSSOSessionLoginArgs(t *testing.T) {
 	got := ssoSessionLoginArgs("vakinha")
 	want := []string{"sso", "login", "--sso-session", "vakinha"}
