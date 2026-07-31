@@ -58,6 +58,22 @@ type RDSLister interface {
 	RDSInstances(ctx context.Context) ([]RDSInstance, error)
 }
 
+// Container is a Docker container running on an EC2 instance. Service is the
+// Compose service label (com.docker.compose.service) and is empty for
+// containers not managed by Compose.
+type Container struct {
+	ID      string
+	Name    string
+	Service string
+	Image   string
+	Status  string
+}
+
+// ContainerLister lists the Docker containers running on an instance.
+type ContainerLister interface {
+	Containers(ctx context.Context, instanceID string) ([]Container, error)
+}
+
 // Login performs the interactive SSO login (shell-out to the AWS CLI).
 type Login interface {
 	SSOLogin(ctx context.Context) error
