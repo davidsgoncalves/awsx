@@ -14,8 +14,8 @@ awsx
 1. Checks that the AWS CLI and the Session Manager Plugin are installed.
 2. Lists your local AWS profiles (IAM Identity Center / SSO profiles first).
 3. Validates the session and runs `aws sso login` when it has expired.
-4. Shows a menu, lists running EC2 instances that are reachable via SSM, and
-   opens an interactive session in the one you pick.
+4. Shows a menu: open an interactive session on an EC2 instance, tunnel to a
+   database, or run a command inside a container on the instance.
 
 ## Install
 
@@ -86,10 +86,14 @@ ssm:StartSession
 ssm:TerminateSession
 ssm:DescribeSessions
 ssm:GetConnectionStatus
+ssm:SendCommand
+ssm:GetCommandInvocation
+rds:DescribeDBInstances
 ```
 
 Starting a session may also require access to the
-`arn:aws:ssm:*:*:document/SSM-SessionManagerRunShell` document.
+`arn:aws:ssm:*:*:document/SSM-SessionManagerRunShell`,
+`AWS-StartInteractiveCommand`, and `AWS-RunShellScript` documents.
 
 The target instance must have an IAM role that allows the SSM Agent to
 register, and the agent must be running and online.
@@ -101,6 +105,29 @@ instance name comes from the `Name` tag, falling back to the instance ID. Under
 the hood it cross-references `ec2:DescribeInstances` with
 `ssm:DescribeInstanceInformation` and opens the session with
 `aws ssm start-session`.
+
+## Running commands in containers
+
+The **Rodar comando** menu entry runs any command inside a Docker container on
+an EC2 instance — a Rails console, a shell, a one-off script:
+
+1. Pick the instance.
+2. AWSX runs `docker ps` on it through `ssm:SendCommand` and lists the
+   containers. Containers started by Docker Compose are shown by their service
+   name, with the container name, image, and status below it.
+3. Type the command. The last five commands per container are remembered and
+   reachable with the arrow keys, so `rails c` is one keystroke the second time.
+4. AWSX opens an interactive session running
+   `sudo docker exec -it <container> <command>` — a real TTY, so consoles and
+   long-running output work.
+
+`sudo` is needed because the SSM session runs as `ssm-user`, which is not in the
+`docker` group. `docker exec` is used rather than `docker compose exec` so the
+command does not depend on the working directory or on which Compose version the
+instance has.
+
+Press `tab` on the command screen to edit the whole `docker exec` line, for
+instances whose setup differs.
 
 ## Contributing
 
