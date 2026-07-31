@@ -24,6 +24,9 @@ const (
 	screenRegion
 	screenRDS
 	screenTunnelInstance
+	screenExecInstance
+	screenContainers
+	screenCommand
 )
 
 type errorAction struct {

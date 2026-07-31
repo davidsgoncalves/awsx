@@ -188,7 +188,8 @@ func TestRoot_SSOFlow_SessionToMenu(t *testing.T) {
 		t.Fatalf("current = %v, want screenMenu", m.current)
 	}
 
-	// quit from menu -> cleanup runs (menu has 3 items; Sair is the third)
+	// quit from menu -> cleanup runs (menu has 4 items; Sair is the fourth)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	drive(m, tea.KeyMsg{Type: tea.KeyEnter})

@@ -9,19 +9,46 @@ import (
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 )
 
-func TestMenuScreen_SelectEC2AndQuit(t *testing.T) {
+func TestMenuScreen_SelectsEachAction(t *testing.T) {
 	m := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"})
+
 	_, next := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor 0 = Acessar EC2
 	if next != screenInstances {
 		t.Fatalf("next = %v, want screenInstances", next)
 	}
+
 	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 1 = túnel
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenRDS {
 		t.Fatalf("next = %v, want screenRDS", next)
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 2 = Sair
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 2 = Rodar comando
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next != screenExecInstance {
+		t.Fatalf("next = %v, want screenExecInstance", next)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = Sair
+	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next != screenQuit {
+		t.Fatalf("next = %v, want screenQuit", next)
+	}
+}
+
+func TestMenuScreen_ViewListsRunCommand(t *testing.T) {
+	m := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"})
+	if !strings.Contains(m.View(), "Rodar comando") {
+		t.Fatalf("menu does not list the run-command action: %q", m.View())
+	}
+}
+
+func TestMenuScreen_CursorStopsAtLastAction(t *testing.T) {
+	m := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"})
+	for range 10 {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	_, next := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenQuit {
 		t.Fatalf("next = %v, want screenQuit", next)
 	}
