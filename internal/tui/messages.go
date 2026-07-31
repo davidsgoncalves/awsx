@@ -13,6 +13,9 @@ import (
 
 const awsTimeout = 15 * time.Second
 
+// containerTimeout covers the SendCommand + poll cycle behind a container list.
+const containerTimeout = 30 * time.Second
+
 type identityMsg struct {
 	id     awsx.Identity
 	region string
@@ -32,6 +35,7 @@ type discovererReadyMsg struct{ d awsx.SSODiscoverer }
 type accountsMsg struct{ accounts []awsx.Account }
 type rolesMsg struct{ roles []awsx.Role }
 type rdsMsg struct{ dbs []awsx.RDSInstance }
+type containersMsg struct{ containers []awsx.Container }
 
 // errMsg carries a failed operation. action, when set, is the denied IAM action
 // (e.g. "ec2:DescribeInstances") extracted from the SDK error.
@@ -126,6 +130,21 @@ func loadRDSCmd(r awsx.RDSLister) tea.Cmd {
 			return errMsg{err: err, action: deniedAction(err, "rds:DescribeDBInstances")}
 		}
 		return rdsMsg{dbs: dbs}
+	}
+}
+
+// loadContainersCmd lists the Docker containers running on instanceID. It uses
+// a longer timeout than the other reads because the underlying SSM command has
+// to be sent, executed on the instance, and polled back.
+func loadContainersCmd(cl awsx.ContainerLister, instanceID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), containerTimeout)
+		defer cancel()
+		cs, err := cl.Containers(ctx, instanceID)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "ssm:SendCommand")}
+		}
+		return containersMsg{containers: cs}
 	}
 }
 

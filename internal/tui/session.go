@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -62,6 +63,32 @@ func portForwardExec(s awsx.Sessioner, instanceID, host string, remotePort, loca
 		"--target", instanceID,
 		"--document-name", "AWS-StartPortForwardingSessionToRemoteHost",
 		"--parameters", fmt.Sprintf("host=%s,portNumber=%d,localPortNumber=%d", host, remotePort, localPort),
+	)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd
+}
+
+// interactiveCommander lets a Sessioner expose an SSM interactive-command
+// *exec.Cmd.
+type interactiveCommander interface {
+	InteractiveCommand(instanceID, command string) *exec.Cmd
+}
+
+// interactiveExec returns the *exec.Cmd that runs command on the instance with
+// a TTY attached, for tea.ExecProcess. Falls back to a direct aws invocation if
+// the Sessioner does not expose InteractiveCommand.
+func interactiveExec(s awsx.Sessioner, instanceID, command string) *exec.Cmd {
+	if ic, ok := s.(interactiveCommander); ok {
+		return ic.InteractiveCommand(instanceID, command)
+	}
+	params, err := json.Marshal(map[string][]string{"command": {command}})
+	if err != nil {
+		params = []byte(`{"command":[""]}`)
+	}
+	cmd := exec.Command("aws", "ssm", "start-session",
+		"--target", instanceID,
+		"--document-name", "AWS-StartInteractiveCommand",
+		"--parameters", string(params),
 	)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd
