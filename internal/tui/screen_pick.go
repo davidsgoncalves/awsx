@@ -173,3 +173,44 @@ func (s regionScreen) Update(msg tea.Msg) (regionScreen, *string, tea.Cmd) {
 }
 
 func (s regionScreen) View() string { return s.list.View() }
+
+// --- containers ---
+
+type containerItem struct{ c awsx.Container }
+
+func (i containerItem) Title() string { return awsx.DisplayContainer(i.c) }
+func (i containerItem) Description() string {
+	return fmt.Sprintf("%s   %s   %s", i.c.Name, i.c.Image, i.c.Status)
+}
+func (i containerItem) FilterValue() string {
+	return i.c.Service + " " + i.c.Name + " " + i.c.Image
+}
+
+type containersScreen struct{ list list.Model }
+
+func newContainersScreen(cs []awsx.Container) containersScreen {
+	items := make([]list.Item, len(cs))
+	for i, c := range cs {
+		items[i] = containerItem{c: c}
+	}
+	l := list.New(items, list.NewDefaultDelegate(), 0, 0)
+	l.Title = "Selecione um container"
+	return containersScreen{list: l}
+}
+
+func (s containersScreen) Update(msg tea.Msg) (containersScreen, *awsx.Container, tea.Cmd) {
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		s.list.SetSize(ws.Width, ws.Height-2)
+	}
+	if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEnter && !s.list.SettingFilter() {
+		if it, ok := s.list.SelectedItem().(containerItem); ok {
+			c := it.c
+			return s, &c, nil
+		}
+	}
+	var cmd tea.Cmd
+	s.list, cmd = s.list.Update(msg)
+	return s, nil, cmd
+}
+
+func (s containersScreen) View() string { return s.list.View() }
