@@ -36,6 +36,11 @@ type accountsMsg struct{ accounts []awsx.Account }
 type rolesMsg struct{ roles []awsx.Role }
 type rdsMsg struct{ dbs []awsx.RDSInstance }
 type containersMsg struct{ containers []awsx.Container }
+type ecsClustersMsg struct{ clusters []string }
+type ecsTasksMsg struct {
+	cluster string
+	tasks   []awsx.ECSTask
+}
 
 // errMsg carries a failed operation. action, when set, is the denied IAM action
 // (e.g. "ec2:DescribeInstances") extracted from the SDK error.
@@ -145,6 +150,33 @@ func loadContainersCmd(cl awsx.ContainerLister, instanceID string) tea.Cmd {
 			return errMsg{err: err, action: deniedAction(err, "ssm:SendCommand")}
 		}
 		return containersMsg{containers: cs}
+	}
+}
+
+// loadECSClustersCmd lists the ECS clusters in the resolved region.
+func loadECSClustersCmd(l awsx.ECSLister) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		cs, err := l.Clusters(ctx)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "ecs:ListClusters")}
+		}
+		return ecsClustersMsg{clusters: cs}
+	}
+}
+
+// loadECSTasksCmd lists the running tasks of a cluster, already resolved to the
+// node each one runs on.
+func loadECSTasksCmd(l awsx.ECSLister, cluster string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		ts, err := l.Tasks(ctx, cluster)
+		if err != nil {
+			return errMsg{err: err, action: deniedAction(err, "ecs:DescribeTasks")}
+		}
+		return ecsTasksMsg{cluster: cluster, tasks: ts}
 	}
 }
 

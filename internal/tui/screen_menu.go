@@ -9,7 +9,13 @@ import (
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 )
 
-var menuActions = []string{"Acessar EC2", "Acessar banco/serviço (túnel)", "Rodar comando", "Sair"}
+var menuActions = []string{
+	"Acessar EC2",
+	"Acessar banco/serviço (túnel)",
+	"Rodar comando",
+	"Rodar comando em container (ECS)",
+	"Sair",
+}
 
 type menuScreen struct {
 	profile string
@@ -44,6 +50,8 @@ func (m menuScreen) Update(msg tea.Msg) (menuScreen, screen) {
 			return m, screenRDS
 		case 2:
 			return m, screenExecInstance
+		case 3:
+			return m, screenECSCluster
 		default:
 			return m, screenQuit
 		}

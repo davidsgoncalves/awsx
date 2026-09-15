@@ -70,6 +70,22 @@ func interactiveCommandArgs(profile, region, instanceID, command string) []strin
 	)
 }
 
+// ecsExecArgs builds the ECS Exec invocation that opens an interactive session
+// inside a container, wherever the task happens to be running.
+func ecsExecArgs(profile, region, cluster, task, container, command string) []string {
+	args := []string{"ecs", "execute-command", "--profile", profile}
+	if region != "" {
+		args = append(args, "--region", region)
+	}
+	return append(args,
+		"--cluster", cluster,
+		"--task", task,
+		"--container", container,
+		"--interactive",
+		"--command", command,
+	)
+}
+
 // env returns the environment for a child command: the inherited environment
 // plus AWS_CONFIG_FILE when ConfigFile is set, or nil to inherit unchanged.
 func (c CLI) env() []string {
@@ -124,6 +140,17 @@ func (c CLI) PortForwardCommand(instanceID, host string, remotePort, localPort i
 // with tea.ExecProcess.
 func (c CLI) InteractiveCommand(instanceID, command string) *exec.Cmd {
 	cmd := exec.Command("aws", interactiveCommandArgs(c.Profile, c.Region, instanceID, command)...)
+	cmd.Env = c.env()
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	return cmd
+}
+
+// ECSExecCommand builds an `aws ecs execute-command` invocation with the TTY
+// wired to the current process, for use with tea.ExecProcess.
+func (c CLI) ECSExecCommand(cluster, task, container, command string) *exec.Cmd {
+	cmd := exec.Command("aws", ecsExecArgs(c.Profile, c.Region, cluster, task, container, command)...)
 	cmd.Env = c.env()
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

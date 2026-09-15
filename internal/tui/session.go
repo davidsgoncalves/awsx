@@ -68,6 +68,30 @@ func portForwardExec(s awsx.Sessioner, instanceID, host string, remotePort, loca
 	return cmd
 }
 
+// ecsExecCommander lets a Sessioner expose an `aws ecs execute-command`
+// *exec.Cmd.
+type ecsExecCommander interface {
+	ECSExecCommand(cluster, task, container, command string) *exec.Cmd
+}
+
+// ecsExec returns the *exec.Cmd that opens an ECS Exec session inside the
+// container, for tea.ExecProcess. Falls back to a direct aws invocation if the
+// Sessioner does not expose ECSExecCommand.
+func ecsExec(s awsx.Sessioner, cluster, task, container, command string) *exec.Cmd {
+	if ec, ok := s.(ecsExecCommander); ok {
+		return ec.ECSExecCommand(cluster, task, container, command)
+	}
+	cmd := exec.Command("aws", "ecs", "execute-command",
+		"--cluster", cluster,
+		"--task", task,
+		"--container", container,
+		"--interactive",
+		"--command", command,
+	)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd
+}
+
 // interactiveCommander lets a Sessioner expose an SSM interactive-command
 // *exec.Cmd.
 type interactiveCommander interface {

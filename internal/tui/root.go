@@ -24,7 +24,7 @@ type Deps struct {
 
 	// Profile flow. region is a region override; "" means resolve from the
 	// profile/env (config.ErrNoRegion when none is configured).
-	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error)
+	NewClients func(ctx context.Context, profile, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error)
 	NewCLI     func(profile, region string) (awsx.Login, awsx.Sessioner)
 
 	// Optional cross-cutting services (nil-safe).
@@ -34,7 +34,7 @@ type Deps struct {
 	// SSO-session flow.
 	NewDiscoverer func(ctx context.Context, session profiles.SSOSession) (awsx.SSODiscoverer, error)
 	NewSSOLogin   func(session profiles.SSOSession) awsx.Login
-	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, containers awsx.ContainerLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
+	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, containers awsx.ContainerLister, ecs awsx.ECSLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
 // flow is which main-menu action is in progress. It decides how the shared
@@ -45,6 +45,7 @@ const (
 	flowSession flow = iota // Acessar EC2
 	flowTunnel              // Acessar banco/serviço (túnel)
 	flowExec                // Rodar comando
+	flowECSExec             // Rodar comando em container (ECS)
 )
 
 type rootModel struct {
@@ -60,6 +61,8 @@ type rootModel struct {
 	instancesScreen  instancesScreen
 	rdsScreen        rdsScreen
 	containersScreen containersScreen
+	ecsClusterScreen ecsClusterScreen
+	ecsTaskScreen    ecsTaskScreen
 	commandScreen    commandScreen
 	errorScreen      errorScreen
 
@@ -71,6 +74,7 @@ type rootModel struct {
 	ssm        awsx.SSMLister
 	rds        awsx.RDSLister
 	containers awsx.ContainerLister
+	ecs        awsx.ECSLister
 	login      awsx.Login
 	session    awsx.Sessioner
 
@@ -82,6 +86,10 @@ type rootModel struct {
 	// Exec (run-command) flow state.
 	execInstance  awsx.Target
 	execContainer awsx.Container
+
+	// ECS exec flow state.
+	ecsCluster string
+	ecsTask    awsx.ECSTask
 
 	// pendingProfile is a profile awaiting a region choice (profile flow).
 	pendingProfile profiles.Profile
@@ -217,6 +225,44 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.containersScreen, _, _ = m.containersScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		m.containersScreen.list.Title = fmt.Sprintf("Containers em %s", awsx.DisplayName(m.execInstance.Instance))
 		m.current = screenContainers
+		return m, nil
+	case ecsClustersMsg:
+		if len(msg.clusters) == 0 {
+			return m.toError(
+				"Nenhum cluster ECS encontrado nessa região.",
+				fmt.Sprintf("Não há clusters em %s, ou falta permissão ecs:ListClusters.", m.region),
+				[]errorAction{
+					{label: "Voltar para o menu principal", next: screenMenu},
+					{label: "Sair", next: screenQuit},
+				},
+			), nil
+		}
+		if len(msg.clusters) == 1 {
+			m.ecsCluster = msg.clusters[0]
+			m.current = screenChecking
+			m.loading = "Carregando containers..."
+			return m, loadECSTasksCmd(m.ecs, m.ecsCluster)
+		}
+		m.ecsClusterScreen = newECSClusterScreen(msg.clusters)
+		m.ecsClusterScreen, _, _ = m.ecsClusterScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.current = screenECSCluster
+		return m, nil
+	case ecsTasksMsg:
+		if len(msg.tasks) == 0 {
+			return m.toError(
+				"Nenhum container em execução nesse cluster.",
+				fmt.Sprintf("O cluster %s não tem tasks RUNNING.", msg.cluster),
+				[]errorAction{
+					{label: "Escolher outro cluster", next: screenECSCluster},
+					{label: "Voltar para o menu principal", next: screenMenu},
+					{label: "Sair", next: screenQuit},
+				},
+			), nil
+		}
+		m.ecsTaskScreen = newECSTaskScreen(msg.tasks)
+		m.ecsTaskScreen, _, _ = m.ecsTaskScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+		m.ecsTaskScreen.list.Title = fmt.Sprintf("Containers em %s", msg.cluster)
+		m.current = screenECSTask
 		return m, nil
 	case needLoginMsg:
 		m.current = screenLogin
@@ -407,6 +453,11 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenChecking
 			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
+		case screenECSCluster:
+			m.flow = flowECSExec
+			m.current = screenChecking
+			m.loading = "Carregando clusters..."
+			return m, loadECSClustersCmd(m.ecs)
 		case screenQuit:
 			return m.quit()
 		}
@@ -476,8 +527,51 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
+	case screenECSCluster:
+		var sel *string
+		var cmd tea.Cmd
+		m.ecsClusterScreen, sel, cmd = m.ecsClusterScreen.Update(msg)
+		if sel != nil {
+			m.ecsCluster = *sel
+			m.current = screenChecking
+			m.loading = "Carregando containers..."
+			return m, loadECSTasksCmd(m.ecs, *sel)
+		}
+		return m, cmd
+
+	case screenECSTask:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.ecsTaskScreen.list.SettingFilter() {
+			m.current = screenMenu
+			return m, nil
+		}
+		var sel *awsx.ECSTask
+		var cmd tea.Cmd
+		m.ecsTaskScreen, sel, cmd = m.ecsTaskScreen.Update(msg)
+		if sel != nil {
+			if !sel.ExecEnabled {
+				return m.toError(
+					"Esse container não aceita ECS Exec.",
+					fmt.Sprintf("A task %s roda com enableExecuteCommand desligado. Habilite no serviço e faça um novo deploy, ou entre pela instância %s.",
+						awsx.TaskID(sel.TaskARN), sel.InstanceID),
+					[]errorAction{
+						{label: "Escolher outro container", next: screenECSTask},
+						{label: "Voltar para o menu principal", next: screenMenu},
+						{label: "Sair", next: screenQuit},
+					},
+				), nil
+			}
+			m.ecsTask = *sel
+			m.commandScreen = newECSCommandScreen(*sel, m.ecsCommandHistory(*sel))
+			m.current = screenCommand
+		}
+		return m, cmd
+
 	case screenCommand:
 		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
+			if m.flow == flowECSExec {
+				m.current = screenECSTask
+				return m, nil
+			}
 			m.current = screenContainers
 			return m, nil
 		}
@@ -485,6 +579,9 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.commandScreen, sub, cmd = m.commandScreen.Update(msg)
 		if sub != nil {
+			if m.flow == flowECSExec {
+				return m.startECSExec(*sub)
+			}
 			return m.startExec(*sub)
 		}
 		return m, cmd
@@ -503,7 +600,7 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, tea.Cmd) {
 	m.inSSOFlow = false
 	m.profile = p.Name
-	idp, ec2c, ssmc, rdsc, contc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
+	idp, ec2c, ssmc, rdsc, contc, ecsc, resolved, err := m.deps.NewClients(context.Background(), p.Name, region)
 	if err != nil {
 		if errors.Is(err, config.ErrNoRegion) {
 			m.pendingProfile = p
@@ -521,7 +618,7 @@ func (m rootModel) startChecking(p profiles.Profile, region string) (tea.Model, 
 	if region != "" {
 		m.remember(state.ProfileKey(p.Name), region)
 	}
-	m.idp, m.ec2, m.ssm, m.rds, m.containers, m.region = idp, ec2c, ssmc, rdsc, contc, resolved
+	m.idp, m.ec2, m.ssm, m.rds, m.containers, m.ecs, m.region = idp, ec2c, ssmc, rdsc, contc, ecsc, resolved
 	if m.deps.NewCLI != nil {
 		m.login, m.session = m.deps.NewCLI(p.Name, resolved)
 	}
@@ -545,7 +642,7 @@ func (m rootModel) startSSOSession(s profiles.SSOSession) (tea.Model, tea.Cmd) {
 // startEphemeral builds the ephemeral clients for the chosen account/role/region
 // and resolves identity.
 func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
-	idp, ec2c, ssmc, rdsc, contc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
+	idp, ec2c, ssmc, rdsc, contc, ecsc, sess, region2, cleanup, err := m.deps.NewEphemeral(m.ssoSession, m.accountID, m.roleName, region)
 	if err != nil {
 		m.deps.Log.Error("prepare ephemeral creds failed (session=%s account=%s role=%s region=%s): %v",
 			m.ssoSession.Name, m.accountID, m.roleName, region, err)
@@ -555,7 +652,7 @@ func (m rootModel) startEphemeral(region string) (tea.Model, tea.Cmd) {
 		}), nil
 	}
 	m.remember(state.SSOKey(m.ssoSession.Name, m.accountID, m.roleName), region)
-	m.rds, m.containers = rdsc, contc
+	m.rds, m.containers, m.ecs = rdsc, contc, ecsc
 	m.idp, m.ec2, m.ssm, m.session = idp, ec2c, ssmc, sess
 	m.region = region2
 	m.cleanup = cleanup
@@ -609,6 +706,32 @@ func (m rootModel) startExec(sub commandSubmit) (tea.Model, tea.Cmd) {
 		id, m.execContainer.Name, m.region, sub.Line)
 
 	return m, execWithCapture(interactiveExec(m.session, id, sub.Line))
+}
+
+// ecsCommandHistory returns the remembered commands for an ECS service.
+func (m rootModel) ecsCommandHistory(t awsx.ECSTask) []string {
+	if m.deps.State == nil {
+		return nil
+	}
+	return m.deps.State.CommandHistory(state.ContainerKey(awsx.DisplayTask(t)))
+}
+
+// startECSExec opens an ECS Exec session inside the chosen container. The task
+// carries its own placement, so no instance is selected along the way.
+func (m rootModel) startECSExec(sub commandSubmit) (tea.Model, tea.Cmd) {
+	if sub.Inner != "" && m.deps.State != nil {
+		m.deps.State.PushCommand(state.ContainerKey(awsx.DisplayTask(m.ecsTask)), sub.Inner)
+		if err := m.deps.State.Save(); err != nil {
+			m.deps.Log.Error("could not save state: %v", err)
+		}
+	}
+	t := m.ecsTask
+	m.connectingName = fmt.Sprintf("%s em %s", awsx.DisplayTask(t), t.Cluster)
+	m.connectingID = awsx.TaskID(t.TaskARN)
+	m.deps.Log.Debug("running ecs exec: cluster=%s task=%s container=%s instance=%s region=%s line=%q",
+		t.Cluster, t.TaskARN, t.Container, t.InstanceID, m.region, sub.Line)
+
+	return m, execWithCapture(ecsExec(m.session, t.Cluster, t.TaskARN, t.Container, sub.Line))
 }
 
 // filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.
@@ -725,6 +848,10 @@ func (m rootModel) View() string {
 		return m.rdsScreen.View()
 	case screenContainers:
 		return m.containersScreen.View()
+	case screenECSCluster:
+		return m.ecsClusterScreen.View()
+	case screenECSTask:
+		return m.ecsTaskScreen.View()
 	case screenCommand:
 		return m.commandScreen.View()
 	case screenError:

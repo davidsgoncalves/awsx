@@ -104,3 +104,41 @@ func TestSmoke_SSODiscovery(t *testing.T) {
 	}
 	t.Logf("first account %s (%s) roles: %d", accounts[0].Name, accounts[0].ID, len(roles))
 }
+
+// TestSmoke_ECS exercises the live ECS path (ListClusters, ListTasks,
+// DescribeTasks, DescribeContainerInstances) against a real profile. Skipped
+// unless AWSX_SMOKE_PROFILE is set. Read-only.
+//
+// Run with: AWSX_SMOKE_PROFILE=<profile> go test ./internal/aws/ -run TestSmoke_ECS -v
+func TestSmoke_ECS(t *testing.T) {
+	profile := os.Getenv("AWSX_SMOKE_PROFILE")
+	if profile == "" {
+		t.Skip("set AWSX_SMOKE_PROFILE to run the live ECS smoke test")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	clients, region, err := NewClients(ctx, profile, "")
+	if err != nil {
+		t.Fatalf("NewClients(%q): %v", profile, err)
+	}
+	t.Logf("resolved region: %s", region)
+
+	clusters, err := clients.Clusters(ctx)
+	if err != nil {
+		t.Fatalf("Clusters: %v", err)
+	}
+	t.Logf("clusters: %v", clusters)
+
+	for _, c := range clusters {
+		tasks, err := clients.Tasks(ctx, c)
+		if err != nil {
+			t.Fatalf("Tasks(%q): %v", c, err)
+		}
+		t.Logf("%s: %d running containers", c, len(tasks))
+		for _, task := range tasks {
+			t.Logf("  - %-22s %-14s %-20s exec=%t", DisplayTask(task), task.Container, task.InstanceID, task.ExecEnabled)
+		}
+	}
+}
