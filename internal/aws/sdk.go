@@ -89,6 +89,7 @@ func (c *Clients) RunningInstances(ctx context.Context) ([]Instance, error) {
 					Type:      string(inst.InstanceType),
 					PrivateIP: deref(inst.PrivateIpAddress),
 					VpcID:     deref(inst.VpcId),
+					Tags:      tagMap(inst.Tags),
 				})
 			}
 		}
@@ -121,6 +122,17 @@ func nameTag(tags []ec2types.Tag) string {
 		}
 	}
 	return ""
+}
+
+func tagMap(tags []ec2types.Tag) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		out[deref(t.Key)] = deref(t.Value)
+	}
+	return out
 }
 
 func ptr(s string) *string { return &s }

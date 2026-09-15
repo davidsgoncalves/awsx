@@ -4,7 +4,10 @@
 // be tested with fakes.
 package aws
 
-import "context"
+import (
+	"context"
+	"sort"
+)
 
 // Identity is the caller identity from sts:GetCallerIdentity.
 type Identity struct {
@@ -21,6 +24,13 @@ type Instance struct {
 	Type      string
 	PrivateIP string
 	VpcID     string
+	Tags      map[string]string
+}
+
+// TagPair is one instance tag, key and value.
+type TagPair struct {
+	Key   string
+	Value string
 }
 
 // Target is an instance that can receive an SSM session.
@@ -82,6 +92,20 @@ type Login interface {
 // Sessioner opens an interactive SSM session, handing over the terminal.
 type Sessioner interface {
 	StartSession(instanceID string) error
+}
+
+// SortedTags returns the instance tags except Name, ordered by key. Name is
+// omitted because it is already the display name.
+func SortedTags(i Instance) []TagPair {
+	out := make([]TagPair, 0, len(i.Tags))
+	for k, v := range i.Tags {
+		if k == "Name" {
+			continue
+		}
+		out = append(out, TagPair{Key: k, Value: v})
+	}
+	sort.Slice(out, func(a, b int) bool { return out[a].Key < out[b].Key })
+	return out
 }
 
 // DisplayName returns the instance Name tag or the instance ID as fallback.
