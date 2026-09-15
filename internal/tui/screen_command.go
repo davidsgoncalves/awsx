@@ -57,7 +57,7 @@ func newCommandScreen(c awsx.Container, history []string) commandScreen {
 // already names the container and the node, so only the in-container command
 // is typed.
 func newECSCommandScreen(t awsx.ECSTask, history []string) commandScreen {
-	ti := newCommandInput("rails c")
+	ti := newCommandInput("bin/rails c")
 	cursor := len(history)
 	if len(history) > 0 {
 		ti.SetValue(history[0])
@@ -198,7 +198,12 @@ func (s commandScreen) View() string {
 	b.WriteString(s.input.View() + "\n\n")
 
 	if s.ecsTask != nil {
-		b.WriteString(styleFaint.Render(s.ecsPreview()) + "\n\n")
+		b.WriteString(styleFaint.Render(s.ecsPreview()) + "\n")
+		if line := s.line(); line != "" {
+			b.WriteString(styleFaint.Render(awsx.ECSShellLine(line)) + "\n\n")
+		} else {
+			b.WriteString("\n")
+		}
 		b.WriteString(styleFaint.Render("enter executa · ↑↓ histórico · esc volta") + "\n")
 		return b.String()
 	}

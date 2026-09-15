@@ -200,6 +200,21 @@ func batches(items []string, size int) func(func([]string) bool) {
 	}
 }
 
+// ECSShellLine wraps command so it runs under a shell. ECS Exec execs the
+// --command argument directly, with no shell and a minimal PATH, so a bare
+// `rails c` fails even when the binstub is right there in the working
+// directory; pipes, redirections and variables would be lost the same way.
+func ECSShellLine(command string) string {
+	return "/bin/sh -c " + shellQuote(command)
+}
+
+// shellQuote wraps s in single quotes, ending and reopening the quoted run
+// around each single quote it contains. The ECS agent splits the command with
+// shell quoting rules, so this survives the round trip.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // DisplayTask names a task entry: the service, or the container when the task
 // does not belong to a service.
 func DisplayTask(t ECSTask) string {

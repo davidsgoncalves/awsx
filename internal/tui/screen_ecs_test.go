@@ -84,3 +84,11 @@ func TestECSCommandScreen_ViewShowsPlacement(t *testing.T) {
 		}
 	}
 }
+
+func TestECSCommandScreen_ViewShowsShellWrapping(t *testing.T) {
+	s := newECSCommandScreen(ecsTasks()[0], nil)
+	s.input.SetValue("bin/rails c")
+	if !strings.Contains(s.View(), "/bin/sh -c 'bin/rails c'") {
+		t.Fatalf("view should show the wrapped line: %q", s.View())
+	}
+}

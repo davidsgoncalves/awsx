@@ -151,6 +151,11 @@ container, without choosing a node:
 4. AWSX runs `aws ecs execute-command --interactive`, which reaches the task
    wherever the scheduler placed it.
 
+ECS Exec execs the command directly, with no shell and a minimal PATH, so AWSX
+wraps what you type in `/bin/sh -c '...'` and shows the wrapped line before it
+runs. A Rails image usually needs the binstub — `bin/rails c` rather than
+`rails c`, which is not on the PATH.
+
 A task whose service has `enableExecuteCommand` turned off is refused with that
 name in the message: the setting is applied at deploy time, so it has to be
 changed on the service and rolled out before the container accepts a session.

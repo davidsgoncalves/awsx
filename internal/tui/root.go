@@ -729,9 +729,9 @@ func (m rootModel) startECSExec(sub commandSubmit) (tea.Model, tea.Cmd) {
 	m.connectingName = fmt.Sprintf("%s em %s", awsx.DisplayTask(t), t.Cluster)
 	m.connectingID = awsx.TaskID(t.TaskARN)
 	m.deps.Log.Debug("running ecs exec: cluster=%s task=%s container=%s instance=%s region=%s line=%q",
-		t.Cluster, t.TaskARN, t.Container, t.InstanceID, m.region, sub.Line)
+		t.Cluster, t.TaskARN, t.Container, t.InstanceID, m.region, awsx.ECSShellLine(sub.Line))
 
-	return m, execWithCapture(ecsExec(m.session, t.Cluster, t.TaskARN, t.Container, sub.Line))
+	return m, execWithCapture(ecsExec(m.session, t.Cluster, t.TaskARN, t.Container, awsx.ECSShellLine(sub.Line)))
 }
 
 // filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.

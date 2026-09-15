@@ -97,6 +97,20 @@ func TestDisplayTask_FallsBackToContainer(t *testing.T) {
 	}
 }
 
+func TestECSShellLine(t *testing.T) {
+	if got := ECSShellLine("bin/rails c"); got != "/bin/sh -c 'bin/rails c'" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestECSShellLine_KeepsSingleQuotes(t *testing.T) {
+	got := ECSShellLine("bin/rails runner 'puts 40 + 2'")
+	want := "/bin/sh -c " + `'bin/rails runner '\''puts 40 + 2'\'''`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
 func TestECSExecArgs(t *testing.T) {
 	got := ecsExecArgs("prod", "us-east-1", "vakinha-stg", "arn/t1", "api-web", "rails c")
 	want := []string{
