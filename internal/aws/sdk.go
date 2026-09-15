@@ -8,6 +8,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/ecs"
 	"github.com/aws/aws-sdk-go-v2/service/rds"
 	"github.com/aws/aws-sdk-go-v2/service/ssm"
 	"github.com/aws/aws-sdk-go-v2/service/sts"
@@ -19,6 +20,7 @@ import (
 type Clients struct {
 	sts *sts.Client
 	ec2 *ec2.Client
+	ecs *ecs.Client
 	ssm *ssm.Client
 	rds *rds.Client
 }
@@ -48,6 +50,7 @@ func newClientsFromConfig(cfg awssdk.Config) *Clients {
 	return &Clients{
 		sts: sts.NewFromConfig(cfg),
 		ec2: ec2.NewFromConfig(cfg),
+		ecs: ecs.NewFromConfig(cfg),
 		ssm: ssm.NewFromConfig(cfg),
 		rds: rds.NewFromConfig(cfg),
 	}
@@ -89,6 +92,7 @@ func (c *Clients) RunningInstances(ctx context.Context) ([]Instance, error) {
 					Type:      string(inst.InstanceType),
 					PrivateIP: deref(inst.PrivateIpAddress),
 					VpcID:     deref(inst.VpcId),
+					Tags:      tagMap(inst.Tags),
 				})
 			}
 		}
@@ -121,6 +125,17 @@ func nameTag(tags []ec2types.Tag) string {
 		}
 	}
 	return ""
+}
+
+func tagMap(tags []ec2types.Tag) map[string]string {
+	if len(tags) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(tags))
+	for _, t := range tags {
+		out[deref(t.Key)] = deref(t.Value)
+	}
+	return out
 }
 
 func ptr(s string) *string { return &s }

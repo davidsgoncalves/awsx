@@ -10,6 +10,10 @@ import (
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 )
 
+// ecsDefaultCommand is what the ECS command screen offers before anything has
+// been run against the service.
+const ecsDefaultCommand = "rails c"
+
 // commandSubmit is a confirmed command. Line is what actually runs; Inner is
 // the in-container command to remember, empty when the user edited the whole
 // line by hand (there is nothing container-scoped to record).
@@ -35,6 +39,10 @@ type commandScreen struct {
 	// manual means no container was chosen (the listing failed), so there is
 	// no in-container mode to switch back to and no history to record.
 	manual bool
+	// ecsTask is set when the command runs through ECS Exec, where the input
+	// is always the in-container command and there is no docker exec line to
+	// edit.
+	ecsTask *awsx.ECSTask
 	// target labels the header in manual mode, where there is no container.
 	target string
 }
@@ -47,6 +55,23 @@ func newCommandScreen(c awsx.Container, history []string) commandScreen {
 		cursor = 0
 	}
 	return commandScreen{container: c, input: ti, history: history, cursor: cursor}
+}
+
+// newECSCommandScreen asks for the command to run through ECS Exec. The task
+// already names the container and the node, so only the in-container command
+// is typed.
+func newECSCommandScreen(t awsx.ECSTask, history []string) commandScreen {
+	ti := newCommandInput(ecsDefaultCommand)
+	// With no history there is still a sensible default: a console is what
+	// this flow is opened for, so it is pre-filled and enter is enough.
+	ti.SetValue(ecsDefaultCommand)
+	cursor := len(history)
+	if len(history) > 0 {
+		ti.SetValue(history[0])
+		cursor = 0
+	}
+	ti.CursorEnd()
+	return commandScreen{input: ti, history: history, cursor: cursor, ecsTask: &t}
 }
 
 // newManualCommandScreen is the fallback when the container list could not be
@@ -74,7 +99,7 @@ func (s commandScreen) fullLineMode() bool { return s.fullLine }
 // line is the full command that would run right now.
 func (s commandScreen) line() string {
 	v := strings.TrimSpace(s.input.Value())
-	if s.fullLine {
+	if s.fullLine || s.ecsTask != nil {
 		return v
 	}
 	if v == "" {
@@ -98,12 +123,19 @@ func (s commandScreen) Update(msg tea.Msg) (commandScreen, *commandSubmit, tea.C
 			return s, nil, nil
 		}
 		sub := commandSubmit{Line: line}
+		if s.ecsTask != nil {
+			sub.Inner = line
+			return s, &sub, nil
+		}
 		if !s.fullLine {
 			sub.Inner = strings.TrimSpace(s.input.Value())
 		}
 		return s, &sub, nil
 
 	case tea.KeyTab:
+		if s.ecsTask != nil {
+			return s, nil, nil
+		}
 		return s.toggleMode(), nil, nil
 
 	case tea.KeyUp:
@@ -173,6 +205,17 @@ func (s commandScreen) View() string {
 	fmt.Fprintf(&b, "%s\n\n", styleTitle.Render(s.header()))
 	b.WriteString(s.input.View() + "\n\n")
 
+	if s.ecsTask != nil {
+		b.WriteString(styleFaint.Render(s.ecsPreview()) + "\n")
+		if line := s.line(); line != "" {
+			b.WriteString(styleFaint.Render(awsx.ECSShellLine(line)) + "\n\n")
+		} else {
+			b.WriteString("\n")
+		}
+		b.WriteString(styleFaint.Render("enter executa · ↑↓ histórico · esc volta") + "\n")
+		return b.String()
+	}
+
 	if s.manual {
 		b.WriteString(styleFaint.Render("digite a linha completa que será executada na instância") + "\n\n")
 		b.WriteString(styleFaint.Render("enter executa · tab indisponível · esc volta") + "\n")
@@ -194,9 +237,24 @@ func (s commandScreen) View() string {
 	return b.String()
 }
 
+// ecsPreview shows the ECS Exec call that will run, so the cluster, task and
+// container are visible before confirming.
+func (s commandScreen) ecsPreview() string {
+	t := s.ecsTask
+	node := t.InstanceID
+	if node == "" {
+		node = "fargate"
+	}
+	return fmt.Sprintf("ecs execute-command · cluster %s · task %s · container %s · %s",
+		t.Cluster, awsx.TaskID(t.TaskARN), t.Container, node)
+}
+
 // header names what the command will run against: the container, or the
 // instance when no container could be listed.
 func (s commandScreen) header() string {
+	if s.ecsTask != nil {
+		return "Rodar comando em " + awsx.DisplayTask(*s.ecsTask)
+	}
 	if s.manual {
 		return "Rodar comando em " + s.target
 	}

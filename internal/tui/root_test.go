@@ -42,6 +42,18 @@ func (fakeRDS) RDSInstances(context.Context) ([]awsx.RDSInstance, error) {
 	}, nil
 }
 
+type fakeECS struct{}
+
+func (fakeECS) Clusters(context.Context) ([]string, error) { return []string{"stg"}, nil }
+func (fakeECS) Tasks(_ context.Context, cluster string) ([]awsx.ECSTask, error) {
+	return []awsx.ECSTask{
+		{Cluster: cluster, TaskARN: "arn:aws:ecs:us-east-1:1:task/stg/abc123", Service: "api-web",
+			Container: "api-web", InstanceID: "i-1", Status: "RUNNING", ExecEnabled: true},
+		{Cluster: cluster, TaskARN: "arn:aws:ecs:us-east-1:1:task/stg/def456", Service: "worker",
+			Container: "worker", InstanceID: "i-2", Status: "RUNNING", ExecEnabled: false},
+	}, nil
+}
+
 func fakeDeps() Deps {
 	return Deps{
 		Profiles: []profiles.Profile{{Name: "prod", IsSSO: true, Region: "us-east-1"}},
@@ -49,8 +61,8 @@ func fakeDeps() Deps {
 			{Name: "AWS CLI", Binary: "aws", Found: true},
 			{Name: "Session Manager Plugin", Binary: "session-manager-plugin", Found: true},
 		},
-		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, "us-east-1", nil
+		NewClients: func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, "us-east-1", nil
 		},
 	}
 }
@@ -90,8 +102,8 @@ func (f fakeLogin) SSOLogin(context.Context) error { *f.called = true; return ni
 func TestRoot_IdentityFailureWithLoginGoesToLogin(t *testing.T) {
 	called := false
 	d := fakeDeps()
-	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
-		return failIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, "us-east-1", nil
+	d.NewClients = func(context.Context, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error) {
+		return failIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, "us-east-1", nil
 	}
 	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return fakeLogin{called: &called}, nil }
 
@@ -133,8 +145,8 @@ func ssoDeps(cleanup func()) Deps {
 			return fakeDiscoverer{}, nil
 		},
 		NewSSOLogin: func(profiles.SSOSession) awsx.Login { return fakeLogin{called: new(bool)} },
-		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.Sessioner, string, func(), error) {
-			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, nil, "sa-east-1", cleanup, nil
+		NewEphemeral: func(profiles.SSOSession, string, string, string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, awsx.Sessioner, string, func(), error) {
+			return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, nil, "sa-east-1", cleanup, nil
 		},
 	}
 }
@@ -189,10 +201,10 @@ func TestRoot_SSOFlow_SessionToMenu(t *testing.T) {
 		t.Fatalf("current = %v, want screenMenu", m.current)
 	}
 
-	// quit from menu -> cleanup runs (menu has 4 items; Sair is the fourth)
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	// quit from menu -> cleanup runs (Sair is the last action)
+	for range len(menuActions) - 1 {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
 	drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if !cleaned {
 		t.Fatal("cleanup was not called on quit")
@@ -223,11 +235,11 @@ func TestRoot_SSOFlow_NeedLoginGoesToLoginThenRetries(t *testing.T) {
 
 func TestRoot_ProfileWithoutRegionShowsRegionPicker(t *testing.T) {
 	d := fakeDeps()
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -253,11 +265,11 @@ func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
 	st := state.Load()
 	d := fakeDeps()
 	d.State = st
-	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, string, error) {
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error) {
 		if region == "" {
-			return nil, nil, nil, nil, nil, "", config.ErrNoRegion
+			return nil, nil, nil, nil, nil, nil, "", config.ErrNoRegion
 		}
-		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, region, nil
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, region, nil
 	}
 
 	m := NewRoot(d)
@@ -529,5 +541,115 @@ func TestRoot_ExecFlow_ManualFallbackOpensFullLineCommandScreen(t *testing.T) {
 	}
 	if !strings.Contains(m.commandScreen.View(), "api") {
 		t.Fatalf("manual screen does not name the instance: %q", m.commandScreen.View())
+	}
+}
+
+// menuToECS walks the main menu to the ECS run-command action.
+func menuToECS(t *testing.T) rootModel {
+	t.Helper()
+	d := fakeDeps()
+	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return nil, nil }
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
+	for range 3 {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	return drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+}
+
+func TestRoot_ECSFlow_SingleClusterSkipsPicker(t *testing.T) {
+	m := menuToECS(t)
+	if m.flow != flowECSExec {
+		t.Fatalf("flow = %v, want flowECSExec", m.flow)
+	}
+
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	if m.current != screenChecking {
+		t.Fatalf("a single cluster should be taken without asking, current = %v", m.current)
+	}
+	if m.ecsCluster != "vakinha-stg" {
+		t.Fatalf("cluster = %q", m.ecsCluster)
+	}
+}
+
+func TestRoot_ECSFlow_MultipleClustersAsk(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"metabase", "vakinha-stg"}})
+	if m.current != screenECSCluster {
+		t.Fatalf("current = %v, want screenECSCluster", m.current)
+	}
+}
+
+func TestRoot_ECSFlow_TaskGoesToCommand(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: []awsx.ECSTask{
+		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "stg-api-web", Container: "api-web",
+			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: true},
+	}})
+	if m.current != screenECSTask {
+		t.Fatalf("current = %v, want screenECSTask", m.current)
+	}
+
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenCommand {
+		t.Fatalf("current = %v, want screenCommand", m.current)
+	}
+	if m.ecsTask.Container != "api-web" {
+		t.Fatalf("task not carried: %+v", m.ecsTask)
+	}
+}
+
+func TestRoot_ECSFlow_ExecDisabledExplainsWhy(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: []awsx.ECSTask{
+		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "legacy", Container: "legacy",
+			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: false},
+	}})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+	if !strings.Contains(m.errorScreen.detail, "enableExecuteCommand") {
+		t.Fatalf("error does not name the setting: %q", m.errorScreen.detail)
+	}
+}
+
+func TestRoot_ECSFlow_EmptyClusterListIsAnError(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{})
+	if m.current != screenError {
+		t.Fatalf("current = %v, want screenError", m.current)
+	}
+}
+
+func TestRoot_ECSFlow_EscFromTasksGoesBackToMenu(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: ecsTasksFixture()})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+}
+
+func TestRoot_ECSFlow_EscFromCommandGoesBackToTasks(t *testing.T) {
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: ecsTasksFixture()})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenECSTask {
+		t.Fatalf("current = %v, want screenECSTask", m.current)
+	}
+}
+
+func ecsTasksFixture() []awsx.ECSTask {
+	return []awsx.ECSTask{
+		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "stg-api-web", Container: "api-web",
+			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: true},
 	}
 }

@@ -15,7 +15,8 @@ awsx
 2. Lists your local AWS profiles (IAM Identity Center / SSO profiles first).
 3. Validates the session and runs `aws sso login` when it has expired.
 4. Shows a menu: open an interactive session on an EC2 instance, tunnel to a
-   database, or run a command inside a container on the instance.
+   database, run a command inside a container on the instance, or run a command
+   inside an ECS container.
 
 ## Install
 
@@ -89,6 +90,11 @@ ssm:GetConnectionStatus
 ssm:SendCommand
 ssm:GetCommandInvocation
 rds:DescribeDBInstances
+ecs:ListClusters
+ecs:ListTasks
+ecs:DescribeTasks
+ecs:DescribeContainerInstances
+ecs:ExecuteCommand
 ```
 
 Starting a session may also require access to the
@@ -96,7 +102,9 @@ Starting a session may also require access to the
 `AWS-StartInteractiveCommand`, and `AWS-RunShellScript` documents.
 
 The target instance must have an IAM role that allows the SSM Agent to
-register, and the agent must be running and online.
+register, and the agent must be running and online. For the ECS flow, the task
+role needs `ssmmessages:CreateControlChannel`, `CreateDataChannel`,
+`OpenControlChannel`, and `OpenDataChannel`.
 
 ## EC2 access via SSM
 
@@ -128,6 +136,34 @@ instance has.
 
 Press `tab` on the command screen to edit the whole `docker exec` line, for
 instances whose setup differs.
+
+## Running commands in ECS containers
+
+The **Rodar comando em container (ECS)** menu entry goes straight to the
+container, without choosing a node:
+
+1. AWSX lists the ECS clusters in the region and skips the picker when there is
+   only one.
+2. It lists the running tasks with `ecs:ListTasks` and `ecs:DescribeTasks`,
+   showing each container by its service name with the EC2 instance it landed
+   on. On a cluster whose nodes share one name, that is what tells them apart.
+3. Type the command, with the same per-service history as the Docker flow.
+4. AWSX runs `aws ecs execute-command --interactive`, which reaches the task
+   wherever the scheduler placed it.
+
+ECS Exec execs the command directly, with no shell and a minimal PATH, so AWSX
+wraps what you type in `/bin/sh -c '...'` and prepends the working directory's
+`bin` to PATH, which is where a Rails image keeps its binstubs. `rails c` and
+`rake db:migrate:status` work as typed. The wrapped line is shown on the command
+screen before it runs.
+
+The command screen opens with `rails c` already filled in, so the whole flow is
+menu, service, enter. Once something else has been run against that service, the
+last command comes back instead.
+
+A task whose service has `enableExecuteCommand` turned off is refused with that
+name in the message: the setting is applied at deploy time, so it has to be
+changed on the service and rolled out before the container accepts a session.
 
 ## Contributing
 
