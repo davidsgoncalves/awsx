@@ -10,6 +10,10 @@ import (
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
 )
 
+// ecsDefaultCommand is what the ECS command screen offers before anything has
+// been run against the service.
+const ecsDefaultCommand = "rails c"
+
 // commandSubmit is a confirmed command. Line is what actually runs; Inner is
 // the in-container command to remember, empty when the user edited the whole
 // line by hand (there is nothing container-scoped to record).
@@ -57,12 +61,16 @@ func newCommandScreen(c awsx.Container, history []string) commandScreen {
 // already names the container and the node, so only the in-container command
 // is typed.
 func newECSCommandScreen(t awsx.ECSTask, history []string) commandScreen {
-	ti := newCommandInput("bin/rails c")
+	ti := newCommandInput(ecsDefaultCommand)
+	// With no history there is still a sensible default: a console is what
+	// this flow is opened for, so it is pre-filled and enter is enough.
+	ti.SetValue(ecsDefaultCommand)
 	cursor := len(history)
 	if len(history) > 0 {
 		ti.SetValue(history[0])
 		cursor = 0
 	}
+	ti.CursorEnd()
 	return commandScreen{input: ti, history: history, cursor: cursor, ecsTask: &t}
 }
 

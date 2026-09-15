@@ -152,9 +152,14 @@ container, without choosing a node:
    wherever the scheduler placed it.
 
 ECS Exec execs the command directly, with no shell and a minimal PATH, so AWSX
-wraps what you type in `/bin/sh -c '...'` and shows the wrapped line before it
-runs. A Rails image usually needs the binstub — `bin/rails c` rather than
-`rails c`, which is not on the PATH.
+wraps what you type in `/bin/sh -c '...'` and prepends the working directory's
+`bin` to PATH, which is where a Rails image keeps its binstubs. `rails c` and
+`rake db:migrate:status` work as typed. The wrapped line is shown on the command
+screen before it runs.
+
+The command screen opens with `rails c` already filled in, so the whole flow is
+menu, service, enter. Once something else has been run against that service, the
+last command comes back instead.
 
 A task whose service has `enableExecuteCommand` turned off is refused with that
 name in the message: the setting is applied at deploy time, so it has to be

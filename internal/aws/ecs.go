@@ -201,11 +201,12 @@ func batches(items []string, size int) func(func([]string) bool) {
 }
 
 // ECSShellLine wraps command so it runs under a shell. ECS Exec execs the
-// --command argument directly, with no shell and a minimal PATH, so a bare
-// `rails c` fails even when the binstub is right there in the working
-// directory; pipes, redirections and variables would be lost the same way.
+// --command argument directly, with no shell and a minimal PATH, so pipes,
+// redirections and variables would be lost. The app's binstub directory is
+// prepended to PATH because a Rails image ships `bin/rails` but no `rails`,
+// and typing the binstub path is exactly the detail this flow exists to hide.
 func ECSShellLine(command string) string {
-	return "/bin/sh -c " + shellQuote(command)
+	return "/bin/sh -c " + shellQuote(`export PATH="$PWD/bin:$PATH"; `+command)
 }
 
 // shellQuote wraps s in single quotes, ending and reopening the quoted run

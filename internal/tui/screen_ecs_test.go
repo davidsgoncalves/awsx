@@ -66,7 +66,6 @@ func TestECSCommandScreen_LineIsTheBareCommand(t *testing.T) {
 
 func TestECSCommandScreen_TabDoesNotSwitchMode(t *testing.T) {
 	s := newECSCommandScreen(ecsTasks()[0], nil)
-	s.input.SetValue("rails c")
 	s, _, _ = s.Update(tea.KeyMsg{Type: tea.KeyTab})
 	if s.fullLineMode() {
 		t.Fatal("ECS mode has no full-line editing to switch to")
@@ -87,8 +86,25 @@ func TestECSCommandScreen_ViewShowsPlacement(t *testing.T) {
 
 func TestECSCommandScreen_ViewShowsShellWrapping(t *testing.T) {
 	s := newECSCommandScreen(ecsTasks()[0], nil)
-	s.input.SetValue("bin/rails c")
-	if !strings.Contains(s.View(), "/bin/sh -c 'bin/rails c'") {
+	if !strings.Contains(s.View(), `/bin/sh -c 'export PATH="$PWD/bin:$PATH"; rails c'`) {
 		t.Fatalf("view should show the wrapped line: %q", s.View())
+	}
+}
+
+func TestECSCommandScreen_PrefillsAConsole(t *testing.T) {
+	s := newECSCommandScreen(ecsTasks()[0], nil)
+	if got := s.line(); got != "rails c" {
+		t.Fatalf("want a console offered by default, got %q", got)
+	}
+	_, sub, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if sub == nil || sub.Line != "rails c" {
+		t.Fatalf("enter on the default should submit it, got %+v", sub)
+	}
+}
+
+func TestECSCommandScreen_HistoryWinsOverTheDefault(t *testing.T) {
+	s := newECSCommandScreen(ecsTasks()[0], []string{"rake db:migrate:status"})
+	if got := s.line(); got != "rake db:migrate:status" {
+		t.Fatalf("want the last command, got %q", got)
 	}
 }

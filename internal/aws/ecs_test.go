@@ -2,6 +2,7 @@ package aws
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -97,17 +98,18 @@ func TestDisplayTask_FallsBackToContainer(t *testing.T) {
 	}
 }
 
-func TestECSShellLine(t *testing.T) {
-	if got := ECSShellLine("bin/rails c"); got != "/bin/sh -c 'bin/rails c'" {
-		t.Fatalf("got %q", got)
+func TestECSShellLine_RunsUnderShellWithBinstubsOnPath(t *testing.T) {
+	got := ECSShellLine("rails c")
+	want := `/bin/sh -c 'export PATH="$PWD/bin:$PATH"; rails c'`
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
 
 func TestECSShellLine_KeepsSingleQuotes(t *testing.T) {
-	got := ECSShellLine("bin/rails runner 'puts 40 + 2'")
-	want := "/bin/sh -c " + `'bin/rails runner '\''puts 40 + 2'\'''`
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
+	got := ECSShellLine("rails runner 'puts 40 + 2'")
+	if !strings.Contains(got, `runner '\''puts 40 + 2'\''`) {
+		t.Fatalf("single quotes not escaped for the ECS parser: %q", got)
 	}
 }
 
