@@ -240,13 +240,7 @@ func (s commandScreen) View() string {
 // ecsPreview shows the ECS Exec call that will run, so the cluster, task and
 // container are visible before confirming.
 func (s commandScreen) ecsPreview() string {
-	t := s.ecsTask
-	node := t.InstanceID
-	if node == "" {
-		node = "fargate"
-	}
-	return fmt.Sprintf("ecs execute-command · cluster %s · task %s · container %s · %s",
-		t.Cluster, awsx.TaskID(t.TaskARN), t.Container, node)
+	return "ecs execute-command · " + taskPlacement(*s.ecsTask)
 }
 
 // header names what the command will run against: the container, or the

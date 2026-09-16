@@ -13,6 +13,8 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/logging"
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 	"github.com/davidsgoncalves/awsx/internal/state"
+	"github.com/davidsgoncalves/awsx/internal/update"
+	"github.com/davidsgoncalves/awsx/internal/version"
 )
 
 // Deps is the injection seam for the TUI. Real wiring lives in cli/root.go;
@@ -63,7 +65,9 @@ type rootModel struct {
 	containersScreen containersScreen
 	ecsClusterScreen ecsClusterScreen
 	ecsTaskScreen    ecsTaskScreen
+	ecsActionScreen  ecsActionScreen
 	commandScreen    commandScreen
+	updateScreen     updateScreen
 	errorScreen      errorScreen
 
 	// Profile / resolved-session state.
@@ -264,6 +268,20 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ecsTaskScreen.list.Title = fmt.Sprintf("Containers em %s", msg.cluster)
 		m.current = screenECSTask
 		return m, nil
+	case updateCheckMsg:
+		m.updateScreen = m.updateScreen.applied(msg)
+		if msg.err != nil {
+			m.deps.Log.Error("update check failed: %v", msg.err)
+		}
+		return m, nil
+	case updateDoneMsg:
+		m.updateScreen.stage = updateDone
+		m.updateScreen.err = msg.err
+		if msg.err != nil {
+			m.deps.Log.Error("update failed (method=%v path=%s): %v",
+				m.updateScreen.method, m.updateScreen.path, msg.err)
+		}
+		return m, nil
 	case needLoginMsg:
 		m.current = screenLogin
 		return m, loginCmd(m.deps.NewSSOLogin(m.ssoSession))
@@ -304,6 +322,8 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			back = errorAction{label: "Voltar para os bancos", next: screenRDS}
 		case flowExec:
 			back = errorAction{label: "Voltar para o comando", next: screenCommand}
+		case flowECSExec:
+			back = errorAction{label: "Voltar para o container", next: screenECSAction}
 		}
 		actions := []errorAction{
 			back,
@@ -458,6 +478,10 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenChecking
 			m.loading = "Carregando clusters..."
 			return m, loadECSClustersCmd(m.ecs)
+		case screenUpdate:
+			m.updateScreen = newUpdateScreen(version.Current())
+			m.current = screenUpdate
+			return m, checkUpdateCmd()
 		case screenQuit:
 			return m.quit()
 		}
@@ -548,28 +572,40 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.ecsTaskScreen, sel, cmd = m.ecsTaskScreen.Update(msg)
 		if sel != nil {
-			if !sel.ExecEnabled {
-				return m.toError(
-					"Esse container não aceita ECS Exec.",
-					fmt.Sprintf("A task %s roda com enableExecuteCommand desligado. Habilite no serviço e faça um novo deploy, ou entre pela instância %s.",
-						awsx.TaskID(sel.TaskARN), sel.InstanceID),
-					[]errorAction{
-						{label: "Escolher outro container", next: screenECSTask},
-						{label: "Voltar para o menu principal", next: screenMenu},
-						{label: "Sair", next: screenQuit},
-					},
-				), nil
-			}
 			m.ecsTask = *sel
-			m.commandScreen = newECSCommandScreen(*sel, m.ecsCommandHistory(*sel))
-			m.current = screenCommand
+			m.ecsActionScreen = newECSActionScreen(*sel)
+			m.current = screenECSAction
 		}
 		return m, cmd
+
+	case screenECSAction:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
+			m.current = screenECSTask
+			return m, nil
+		}
+		var action ecsAction
+		m.ecsActionScreen, action = m.ecsActionScreen.Update(msg)
+		switch action {
+		case ecsActionCommand:
+			if !m.ecsTask.ExecEnabled {
+				return m.execDisabled(), nil
+			}
+			m.commandScreen = newECSCommandScreen(m.ecsTask, m.ecsCommandHistory(m.ecsTask))
+			m.current = screenCommand
+		case ecsActionShell:
+			if !m.ecsTask.ExecEnabled {
+				return m.execDisabled(), nil
+			}
+			return m.startECSShell()
+		case ecsActionHost:
+			return m.startECSHost()
+		}
+		return m, nil
 
 	case screenCommand:
 		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
 			if m.flow == flowECSExec {
-				m.current = screenECSTask
+				m.current = screenECSAction
 				return m, nil
 			}
 			m.current = screenContainers
@@ -585,6 +621,21 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.startExec(*sub)
 		}
 		return m, cmd
+
+	case screenUpdate:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
+			m.current = screenMenu
+			return m, nil
+		}
+		var apply bool
+		m.updateScreen, apply = m.updateScreen.Update(msg)
+		if !apply {
+			return m, nil
+		}
+		if m.updateScreen.method == update.MethodBrew {
+			return m, brewUpgradeCmd()
+		}
+		return m, applyUpdateCmd(m.updateScreen.latest, m.updateScreen.path)
 
 	case screenError:
 		var next screen
@@ -734,6 +785,50 @@ func (m rootModel) startECSExec(sub commandSubmit) (tea.Model, tea.Cmd) {
 	return m, execWithCapture(ecsExec(m.session, t.Cluster, t.TaskARN, t.Container, awsx.ECSShellLine(sub.Line)))
 }
 
+// startECSShell opens a shell inside the chosen container. Nothing was typed,
+// so there is no command to remember.
+func (m rootModel) startECSShell() (tea.Model, tea.Cmd) {
+	t := m.ecsTask
+	m.connectingName = fmt.Sprintf("shell em %s", awsx.DisplayTask(t))
+	m.connectingID = awsx.TaskID(t.TaskARN)
+	m.deps.Log.Debug("opening ecs shell: cluster=%s task=%s container=%s region=%s",
+		t.Cluster, t.TaskARN, t.Container, m.region)
+
+	return m, execWithCapture(ecsExec(m.session, t.Cluster, t.TaskARN, t.Container,
+		awsx.ECSShellLine(awsx.ECSInteractiveShell())))
+}
+
+// startECSHost opens an SSM session on the instance the task landed on. This
+// reaches the node, not the container, and does not need ECS Exec.
+func (m rootModel) startECSHost() (tea.Model, tea.Cmd) {
+	t := m.ecsTask
+	m.connectingName = fmt.Sprintf("host de %s", awsx.DisplayTask(t))
+	m.connectingID = t.InstanceID
+	m.deps.Log.Debug("opening ssm session on ecs host: instance=%s task=%s region=%s",
+		t.InstanceID, awsx.TaskID(t.TaskARN), m.region)
+
+	return m, execWithCapture(sessionExec(m.session, t.InstanceID, m.connectingName))
+}
+
+// execDisabled explains that the task was started without ECS Exec, pointing
+// at the host session as the way in that does not depend on it.
+func (m rootModel) execDisabled() rootModel {
+	t := m.ecsTask
+	detail := fmt.Sprintf("A task %s roda com enableExecuteCommand desligado. Habilite no serviço e faça um novo deploy.",
+		awsx.TaskID(t.TaskARN))
+	actions := []errorAction{}
+	if t.InstanceID != "" {
+		detail += fmt.Sprintf(" O host %s continua acessível por SSM.", t.InstanceID)
+		actions = append(actions, errorAction{label: "Voltar para o container", next: screenECSAction})
+	}
+	actions = append(actions,
+		errorAction{label: "Escolher outro container", next: screenECSTask},
+		errorAction{label: "Voltar para o menu principal", next: screenMenu},
+		errorAction{label: "Sair", next: screenQuit},
+	)
+	return m.toError("Esse container não aceita ECS Exec.", detail, actions)
+}
+
 // filterDBsByVPC keeps the RDS instances in the same VPC as the tunnel instance.
 // If the instance has no VPC (unusual), all databases are returned.
 func filterDBsByVPC(dbs []awsx.RDSInstance, vpcID string) []awsx.RDSInstance {
@@ -789,6 +884,17 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 		return m, nil
 	case screenCommand:
 		m.current = screenCommand
+		return m, nil
+	case screenECSCluster:
+		m.current = screenChecking
+		m.loading = "Carregando clusters..."
+		return m, loadECSClustersCmd(m.ecs)
+	case screenECSTask:
+		m.current = screenChecking
+		m.loading = "Carregando containers..."
+		return m, loadECSTasksCmd(m.ecs, m.ecsCluster)
+	case screenECSAction:
+		m.current = screenECSAction
 		return m, nil
 	case screenMenu:
 		m.current = screenMenu
@@ -852,6 +958,10 @@ func (m rootModel) View() string {
 		return m.ecsClusterScreen.View()
 	case screenECSTask:
 		return m.ecsTaskScreen.View()
+	case screenECSAction:
+		return m.ecsActionScreen.View()
+	case screenUpdate:
+		return m.updateScreen.View()
 	case screenCommand:
 		return m.commandScreen.View()
 	case screenError:

@@ -29,6 +29,8 @@ const (
 	screenCommand
 	screenECSCluster
 	screenECSTask
+	screenECSAction
+	screenUpdate
 )
 
 type errorAction struct {

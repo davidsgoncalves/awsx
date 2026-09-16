@@ -16,6 +16,7 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/profiles"
 	"github.com/davidsgoncalves/awsx/internal/state"
 	"github.com/davidsgoncalves/awsx/internal/tui"
+	"github.com/davidsgoncalves/awsx/internal/version"
 )
 
 // NewRootCmd returns the awsx root command. With no subcommand it runs the TUI.
@@ -23,6 +24,7 @@ func NewRootCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:           "awsx",
 		Short:         "Interactive AWS login and EC2 access via SSM Session Manager",
+		Version:       version.Current(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

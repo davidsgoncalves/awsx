@@ -3,18 +3,25 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strings"
 	"time"
 
 	"github.com/aws/smithy-go"
 	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
+	"github.com/davidsgoncalves/awsx/internal/update"
 )
 
 const awsTimeout = 15 * time.Second
 
 // containerTimeout covers the SendCommand + poll cycle behind a container list.
 const containerTimeout = 30 * time.Second
+
+// downloadTimeout covers fetching and verifying a release archive.
+const downloadTimeout = 2 * time.Minute
 
 type identityMsg struct {
 	id     awsx.Identity
@@ -41,6 +48,18 @@ type ecsTasksMsg struct {
 	cluster string
 	tasks   []awsx.ECSTask
 }
+
+// updateCheckMsg carries the answer to a release check, together with how
+// this copy of awsx can be replaced.
+type updateCheckMsg struct {
+	latest string
+	method update.Method
+	path   string
+	err    error
+}
+
+// updateDoneMsg reports the outcome of an upgrade attempt.
+type updateDoneMsg struct{ err error }
 
 // errMsg carries a failed operation. action, when set, is the denied IAM action
 // (e.g. "ec2:DescribeInstances") extracted from the SDK error.
@@ -190,4 +209,47 @@ func loadRolesCmd(d awsx.SSODiscoverer, accountID string) tea.Cmd {
 		}
 		return rolesMsg{roles: roles}
 	}
+}
+
+// checkUpdateCmd asks GitHub for the newest release and classifies how this
+// copy of awsx was installed.
+func checkUpdateCmd() tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), awsTimeout)
+		defer cancel()
+		method, path, err := update.Installed()
+		if err != nil {
+			return updateCheckMsg{err: err}
+		}
+		rel, err := update.Latest(ctx)
+		if err != nil {
+			return updateCheckMsg{err: err}
+		}
+		return updateCheckMsg{latest: rel.Tag, method: method, path: path}
+	}
+}
+
+// applyUpdateCmd downloads the release and replaces the binary in place.
+func applyUpdateCmd(tag, path string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), downloadTimeout)
+		defer cancel()
+		return updateDoneMsg{err: update.Install(ctx, tag, path)}
+	}
+}
+
+// brewUpgradeCmd hands the terminal to `brew upgrade`, capturing stderr so a
+// failure survives the TUI redraw.
+func brewUpgradeCmd() tea.Cmd {
+	cmd := brewUpgradeExec()
+	buf := &strings.Builder{}
+	cmd.Stderr = io.MultiWriter(cmd.Stderr, buf)
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		if err != nil {
+			if out := strings.TrimSpace(buf.String()); out != "" {
+				return updateDoneMsg{err: fmt.Errorf("%w: %s", err, out)}
+			}
+		}
+		return updateDoneMsg{err: err}
+	})
 }

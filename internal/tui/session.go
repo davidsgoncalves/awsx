@@ -11,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
+	"github.com/davidsgoncalves/awsx/internal/update"
 )
 
 // execWithCapture runs cmd via tea.ExecProcess, capturing its stderr (alongside
@@ -88,6 +89,14 @@ func ecsExec(s awsx.Sessioner, cluster, task, container, command string) *exec.C
 		"--interactive",
 		"--command", command,
 	)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	return cmd
+}
+
+// brewUpgradeExec returns the *exec.Cmd that upgrades the Homebrew cask, for
+// tea.ExecProcess: brew writes its progress straight to the terminal.
+func brewUpgradeExec() *exec.Cmd {
+	cmd := exec.Command("brew", update.BrewUpgradeArgs()...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd
 }

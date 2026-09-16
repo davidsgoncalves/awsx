@@ -131,3 +131,16 @@ func TestECSExecArgs_NoRegion(t *testing.T) {
 		t.Fatalf("region flag should be omitted when empty: %v", got)
 	}
 }
+
+func TestECSInteractiveShell_FallsBackToShWithoutExecFailure(t *testing.T) {
+	got := ECSInteractiveShell()
+	if !strings.Contains(got, "command -v bash") {
+		t.Fatalf("bash is not probed before being exec'd: %q", got)
+	}
+	if !strings.Contains(got, "exec sh") {
+		t.Fatalf("no sh fallback: %q", got)
+	}
+	if strings.Contains(got, "exec bash ||") {
+		t.Fatalf("a failing exec would end the shell before the fallback: %q", got)
+	}
+}

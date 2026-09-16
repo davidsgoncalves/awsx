@@ -29,13 +29,19 @@ func TestMenuScreen_SelectsEachAction(t *testing.T) {
 		t.Fatalf("next = %v, want screenExecInstance", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = Rodar comando em container (ECS)
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = ECS
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenECSCluster {
 		t.Fatalf("next = %v, want screenECSCluster", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 4 = Sair
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 4 = Atualizar AWSX
+	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next != screenUpdate {
+		t.Fatalf("next = %v, want screenUpdate", next)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 5 = Sair
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenQuit {
 		t.Fatalf("next = %v, want screenQuit", next)

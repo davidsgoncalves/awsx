@@ -544,19 +544,10 @@ func TestRoot_ExecFlow_ManualFallbackOpensFullLineCommandScreen(t *testing.T) {
 	}
 }
 
-// menuToECS walks the main menu to the ECS run-command action.
+// menuToECS walks the main menu to the ECS action.
 func menuToECS(t *testing.T) rootModel {
 	t.Helper()
-	d := fakeDeps()
-	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return nil, nil }
-	m := NewRoot(d)
-	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
-	for range 3 {
-		m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
-	}
-	return drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	return menuAt(t, 3)
 }
 
 func TestRoot_ECSFlow_SingleClusterSkipsPicker(t *testing.T) {
@@ -582,39 +573,66 @@ func TestRoot_ECSFlow_MultipleClustersAsk(t *testing.T) {
 	}
 }
 
-func TestRoot_ECSFlow_TaskGoesToCommand(t *testing.T) {
-	m := menuToECS(t)
-	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
-	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: []awsx.ECSTask{
-		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "stg-api-web", Container: "api-web",
-			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: true},
-	}})
-	if m.current != screenECSTask {
-		t.Fatalf("current = %v, want screenECSTask", m.current)
-	}
-
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.current != screenCommand {
-		t.Fatalf("current = %v, want screenCommand", m.current)
+func TestRoot_ECSFlow_TaskGoesToActions(t *testing.T) {
+	m := menuToECSTask(t, ecsTasksFixture())
+	if m.current != screenECSAction {
+		t.Fatalf("current = %v, want screenECSAction", m.current)
 	}
 	if m.ecsTask.Container != "api-web" {
 		t.Fatalf("task not carried: %+v", m.ecsTask)
 	}
 }
 
+func TestRoot_ECSFlow_RunCommandActionOpensTheCommandScreen(t *testing.T) {
+	m := menuToECSTask(t, ecsTasksFixture())
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current != screenCommand {
+		t.Fatalf("current = %v, want screenCommand", m.current)
+	}
+}
+
 func TestRoot_ECSFlow_ExecDisabledExplainsWhy(t *testing.T) {
-	m := menuToECS(t)
-	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
-	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: []awsx.ECSTask{
+	m := menuToECSTask(t, []awsx.ECSTask{
 		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "legacy", Container: "legacy",
 			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: false},
-	}})
+	})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.current != screenError {
 		t.Fatalf("current = %v, want screenError", m.current)
 	}
 	if !strings.Contains(m.errorScreen.detail, "enableExecuteCommand") {
 		t.Fatalf("error does not name the setting: %q", m.errorScreen.detail)
+	}
+	if !strings.Contains(m.errorScreen.detail, "i-aaa") {
+		t.Fatalf("error does not point at the host: %q", m.errorScreen.detail)
+	}
+}
+
+func TestRoot_ECSFlow_HostActionNeedsNoExec(t *testing.T) {
+	m := menuToECSTask(t, []awsx.ECSTask{
+		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "legacy", Container: "legacy",
+			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: false},
+	})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current == screenError {
+		t.Fatalf("a host session must not require ECS Exec: %q", m.errorScreen.title)
+	}
+	if m.connectingID != "i-aaa" {
+		t.Fatalf("connecting to %q, want the host instance", m.connectingID)
+	}
+}
+
+func TestRoot_ECSFlow_ShellActionTargetsTheContainer(t *testing.T) {
+	m := menuToECSTask(t, ecsTasksFixture())
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.current == screenError {
+		t.Fatalf("shell failed: %q", m.errorScreen.title)
+	}
+	if m.connectingID != "abc" {
+		t.Fatalf("connecting to %q, want the task", m.connectingID)
 	}
 }
 
@@ -636,15 +654,30 @@ func TestRoot_ECSFlow_EscFromTasksGoesBackToMenu(t *testing.T) {
 	}
 }
 
-func TestRoot_ECSFlow_EscFromCommandGoesBackToTasks(t *testing.T) {
-	m := menuToECS(t)
-	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
-	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: ecsTasksFixture()})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+func TestRoot_ECSFlow_EscFromActionsGoesBackToTasks(t *testing.T) {
+	m := menuToECSTask(t, ecsTasksFixture())
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.current != screenECSTask {
 		t.Fatalf("current = %v, want screenECSTask", m.current)
 	}
+}
+
+func TestRoot_ECSFlow_EscFromCommandGoesBackToActions(t *testing.T) {
+	m := menuToECSTask(t, ecsTasksFixture())
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenECSAction {
+		t.Fatalf("current = %v, want screenECSAction", m.current)
+	}
+}
+
+// menuToECSTask walks the ECS flow up to the action menu of the first task.
+func menuToECSTask(t *testing.T, tasks []awsx.ECSTask) rootModel {
+	t.Helper()
+	m := menuToECS(t)
+	m = drive(m, ecsClustersMsg{clusters: []string{"vakinha-stg"}})
+	m = drive(m, ecsTasksMsg{cluster: "vakinha-stg", tasks: tasks})
+	return drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 }
 
 func ecsTasksFixture() []awsx.ECSTask {
@@ -652,4 +685,54 @@ func ecsTasksFixture() []awsx.ECSTask {
 		{Cluster: "vakinha-stg", TaskARN: "arn/abc", Service: "stg-api-web", Container: "api-web",
 			InstanceID: "i-aaa", Status: "RUNNING", ExecEnabled: true},
 	}
+}
+
+func TestRoot_UpdateFlow_MenuOpensTheUpdateScreen(t *testing.T) {
+	m := menuAt(t, 4)
+	if m.current != screenUpdate {
+		t.Fatalf("current = %v, want screenUpdate", m.current)
+	}
+	if m.updateScreen.stage != updateChecking {
+		t.Fatalf("stage = %v, want updateChecking", m.updateScreen.stage)
+	}
+}
+
+func TestRoot_UpdateFlow_ResultThenEscGoesBackToMenu(t *testing.T) {
+	m := menuAt(t, 4)
+	m = drive(m, updateCheckMsg{latest: "v99.0.0", path: "/usr/local/bin/awsx"})
+	if m.updateScreen.stage != updateFound {
+		t.Fatalf("stage = %v, want updateFound", m.updateScreen.stage)
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+}
+
+func TestRoot_UpdateFlow_FailureIsReported(t *testing.T) {
+	m := menuAt(t, 4)
+	m = drive(m, updateCheckMsg{latest: "v99.0.0", path: "/usr/local/bin/awsx"})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.updateScreen.stage != updateApplying {
+		t.Fatalf("stage = %v, want updateApplying", m.updateScreen.stage)
+	}
+	m = drive(m, updateDoneMsg{err: errors.New("permission denied")})
+	if m.updateScreen.stage != updateDone || m.updateScreen.err == nil {
+		t.Fatalf("stage = %v, err = %v", m.updateScreen.stage, m.updateScreen.err)
+	}
+}
+
+// menuAt walks to the main menu and confirms the action at index i.
+func menuAt(t *testing.T, i int) rootModel {
+	t.Helper()
+	d := fakeDeps()
+	d.NewCLI = func(string, string) (awsx.Login, awsx.Sessioner) { return nil, nil }
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
+	for range i {
+		m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	return drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 }

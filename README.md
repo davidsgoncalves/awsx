@@ -15,8 +15,8 @@ awsx
 2. Lists your local AWS profiles (IAM Identity Center / SSO profiles first).
 3. Validates the session and runs `aws sso login` when it has expired.
 4. Shows a menu: open an interactive session on an EC2 instance, tunnel to a
-   database, run a command inside a container on the instance, or run a command
-   inside an ECS container.
+   database, run a command inside a container on the instance, reach an ECS
+   container, or update itself.
 
 ## Install
 
@@ -137,19 +137,27 @@ instance has.
 Press `tab` on the command screen to edit the whole `docker exec` line, for
 instances whose setup differs.
 
-## Running commands in ECS containers
+## ECS
 
-The **Rodar comando em container (ECS)** menu entry goes straight to the
-container, without choosing a node:
+The **ECS** menu entry walks from the cluster down to the container, without
+choosing a node:
 
 1. AWSX lists the ECS clusters in the region and skips the picker when there is
    only one.
 2. It lists the running tasks with `ecs:ListTasks` and `ecs:DescribeTasks`,
    showing each container by its service name with the EC2 instance it landed
    on. On a cluster whose nodes share one name, that is what tells them apart.
-3. Type the command, with the same per-service history as the Docker flow.
-4. AWSX runs `aws ecs execute-command --interactive`, which reaches the task
-   wherever the scheduler placed it.
+3. The chosen task offers three ways in:
+
+| Action | What it opens |
+| --- | --- |
+| **Rodar comando** | The command screen, with the same per-service history as the Docker flow, then `aws ecs execute-command --interactive` |
+| **Shell no container** | `bash` inside the container, falling back to `sh` for images that do not ship it |
+| **Acessar host (SSM)** | `aws ssm start-session` on the instance the task landed on |
+
+`Acessar host (SSM)` is left out for Fargate tasks, which run on no instance of
+yours. The first two actions need ECS Exec on the service; the host session
+works without it.
 
 ECS Exec execs the command directly, with no shell and a minimal PATH, so AWSX
 wraps what you type in `/bin/sh -c '...'` and prepends the working directory's
@@ -164,6 +172,28 @@ last command comes back instead.
 A task whose service has `enableExecuteCommand` turned off is refused with that
 name in the message: the setting is applied at deploy time, so it has to be
 changed on the service and rolled out before the container accepts a session.
+The host session stays available meanwhile.
+
+## Updating
+
+The **Atualizar AWSX** menu entry compares the running version against the
+latest GitHub release. The check happens when you open the entry, and AWSX
+makes no network call for it before that.
+
+What `Enter` does depends on how this copy was installed:
+
+- **Release archive** (`scripts/install.sh` or a manual download): AWSX
+  downloads the archive for your platform, verifies it against `checksums.txt`,
+  and swaps its own binary through a temporary file in the same directory.
+  Without write permission there, the screen shows the installer command to run
+  under `sudo`.
+- **Homebrew**: runs `brew upgrade --cask davidsgoncalves/tap/awsx`, so the tap
+  stays consistent with what is on disk.
+- **`go install`**: shows `go install github.com/davidsgoncalves/awsx/cmd/awsx@latest`,
+  which is how the toolchain replaces builds it owns.
+
+`awsx --version` prints the same version. Release builds carry the tag; a local
+`go build` reports `dev`.
 
 ## Contributing
 
@@ -180,7 +210,9 @@ git push origin v0.1.0
 ```
 
 The pipeline runs tests, builds the four platform binaries, generates
-`checksums.txt`, creates the GitHub Release, and updates the Homebrew tap.
+`checksums.txt`, creates the GitHub Release, and updates the Homebrew tap. The
+tag is stamped into the binary at link time and is what `awsx --version` and the
+update check report.
 
 ## License
 

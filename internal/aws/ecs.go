@@ -224,3 +224,11 @@ func DisplayTask(t ECSTask) string {
 	}
 	return t.Container
 }
+
+// ECSInteractiveShell is the command that opens a shell inside the container.
+// bash is preferred, with sh as the fallback for images that do not ship it.
+// The fallback is guarded with command -v rather than `exec bash || exec sh`
+// because a failed exec ends the wrapping shell before the `||` is reached.
+func ECSInteractiveShell() string {
+	return "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"
+}

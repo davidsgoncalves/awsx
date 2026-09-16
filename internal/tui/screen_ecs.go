@@ -52,11 +52,7 @@ type ecsTaskItem struct{ t awsx.ECSTask }
 
 func (i ecsTaskItem) Title() string { return awsx.DisplayTask(i.t) }
 func (i ecsTaskItem) Description() string {
-	node := i.t.InstanceID
-	if node == "" {
-		node = "fargate"
-	}
-	return fmt.Sprintf("%s   %s   task %s", i.t.Container, node, awsx.TaskID(i.t.TaskARN))
+	return fmt.Sprintf("%s   %s   task %s", i.t.Container, taskNode(i.t), awsx.TaskID(i.t.TaskARN))
 }
 func (i ecsTaskItem) FilterValue() string {
 	return fmt.Sprintf("%s %s %s %s",
@@ -91,3 +87,18 @@ func (s ecsTaskScreen) Update(msg tea.Msg) (ecsTaskScreen, *awsx.ECSTask, tea.Cm
 }
 
 func (s ecsTaskScreen) View() string { return s.list.View() }
+
+// taskPlacement names where a task runs, for the screens that show it before
+// anything is executed against it.
+func taskPlacement(t awsx.ECSTask) string {
+	return fmt.Sprintf("cluster %s · task %s · container %s · %s",
+		t.Cluster, awsx.TaskID(t.TaskARN), t.Container, taskNode(t))
+}
+
+// taskNode is the instance the task landed on, or "fargate" when it has none.
+func taskNode(t awsx.ECSTask) string {
+	if t.InstanceID == "" {
+		return "fargate"
+	}
+	return t.InstanceID
+}

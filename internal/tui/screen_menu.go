@@ -13,7 +13,8 @@ var menuActions = []string{
 	"Acessar EC2",
 	"Acessar banco/serviço (túnel)",
 	"Rodar comando",
-	"Rodar comando em container (ECS)",
+	"ECS",
+	"Atualizar AWSX",
 	"Sair",
 }
 
@@ -52,6 +53,8 @@ func (m menuScreen) Update(msg tea.Msg) (menuScreen, screen) {
 			return m, screenExecInstance
 		case 3:
 			return m, screenECSCluster
+		case 4:
+			return m, screenUpdate
 		default:
 			return m, screenQuit
 		}
