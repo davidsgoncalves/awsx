@@ -14,9 +14,11 @@ awsx
 1. Checks that the AWS CLI and the Session Manager Plugin are installed.
 2. Lists your local AWS profiles (IAM Identity Center / SSO profiles first).
 3. Validates the session and runs `aws sso login` when it has expired.
-4. Shows a menu: open an interactive session on an EC2 instance, tunnel to a
-   database, run a command inside a container on the instance, reach an ECS
-   container, or update itself.
+4. Shows a menu grouped by service. Under **EC2**, pick an instance, then open
+   a session on it, run a command inside one of its Docker containers, or
+   tunnel through it to a database. Under **ECS**, pick a container, then run a
+   command, open a shell, or open a session on its instance. The menu also
+   updates AWSX itself.
 
 ## Install
 
@@ -69,8 +71,8 @@ set, and errors clearly when neither is configured).
 awsx
 ```
 
-- Arrow keys to move, `Enter` to select, type to filter, `Esc` to go back,
-  `q` / `Ctrl+C` to quit.
+- Arrow keys to move, `Enter` to select, type to filter, `Esc` to go back one
+  level, `Ctrl+C` to quit.
 - When an SSM session ends you return to the menu.
 - Debug logging (never includes credentials or tokens):
 
@@ -108,6 +110,14 @@ role needs `ssmmessages:CreateControlChannel`, `CreateDataChannel`,
 
 ## EC2 access via SSM
 
+**EC2** lists the instances first and offers the actions once one is picked:
+
+| Action | What it opens |
+| --- | --- |
+| **Sessão na instância** | `aws ssm start-session` on the instance |
+| **Comando em container Docker** | The container list of the instance, then the command screen |
+| **Túnel para banco RDS** | The RDS databases in the instance's VPC, then a port forward through it |
+
 AWSX lists only instances that are `running` **and** online in SSM. The
 instance name comes from the `Name` tag, falling back to the instance ID. Under
 the hood it cross-references `ec2:DescribeInstances` with
@@ -116,10 +126,10 @@ the hood it cross-references `ec2:DescribeInstances` with
 
 ## Running commands in containers
 
-The **Rodar comando** menu entry runs any command inside a Docker container on
-an EC2 instance — a Rails console, a shell, a one-off script:
+**EC2 > Comando em container Docker** runs any command inside a Docker
+container on an EC2 instance — a Rails console, a shell, a one-off script:
 
-1. Pick the instance.
+1. Pick the instance, then **Comando em container Docker**.
 2. AWSX runs `docker ps` on it through `ssm:SendCommand` and lists the
    containers. Containers started by Docker Compose are shown by their service
    name, with the container name, image, and status below it.
@@ -153,9 +163,9 @@ choosing a node:
 | --- | --- |
 | **Rodar comando** | The command screen, with the same per-service history as the Docker flow, then `aws ecs execute-command --interactive` |
 | **Shell no container** | `bash` inside the container, falling back to `sh` for images that do not ship it |
-| **Acessar host (SSM)** | `aws ssm start-session` on the instance the task landed on |
+| **Sessão na instância (SSM)** | `aws ssm start-session` on the instance the task landed on |
 
-`Acessar host (SSM)` is left out for Fargate tasks, which run on no instance of
+`Sessão na instância (SSM)` is left out for Fargate tasks, which run on no instance of
 yours. The first two actions need ECS Exec on the service; the host session
 works without it.
 

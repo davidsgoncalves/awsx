@@ -23,8 +23,7 @@ const (
 	screenRoles
 	screenRegion
 	screenRDS
-	screenTunnelInstance
-	screenExecInstance
+	screenEC2Action
 	screenContainers
 	screenCommand
 	screenECSCluster

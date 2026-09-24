@@ -12,46 +12,39 @@ import (
 func TestMenuScreen_SelectsEachAction(t *testing.T) {
 	m := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"})
 
-	_, next := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor 0 = Acessar EC2
+	_, next := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // cursor 0 = EC2
 	if next != screenInstances {
 		t.Fatalf("next = %v, want screenInstances", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 1 = túnel
-	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if next != screenRDS {
-		t.Fatalf("next = %v, want screenRDS", next)
-	}
-
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 2 = Rodar comando
-	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if next != screenExecInstance {
-		t.Fatalf("next = %v, want screenExecInstance", next)
-	}
-
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = ECS
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 1 = ECS
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenECSCluster {
 		t.Fatalf("next = %v, want screenECSCluster", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 4 = Atualizar AWSX
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 2 = Atualizar AWSX
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenUpdate {
 		t.Fatalf("next = %v, want screenUpdate", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 5 = Sair
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = Sair
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenQuit {
 		t.Fatalf("next = %v, want screenQuit", next)
 	}
 }
 
-func TestMenuScreen_ViewListsRunCommand(t *testing.T) {
-	m := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"})
-	if !strings.Contains(m.View(), "Rodar comando") {
-		t.Fatalf("menu does not list the run-command action: %q", m.View())
+func TestMenuScreen_ViewGroupsByService(t *testing.T) {
+	v := newMenuScreen("prod", "us-east-1", awsx.Identity{Account: "123"}).View()
+	for _, want := range []string{"EC2", "ECS", "enter confirma"} {
+		if !strings.Contains(v, want) {
+			t.Fatalf("menu does not show %q: %q", want, v)
+		}
+	}
+	if strings.Contains(v, "Rodar comando") {
+		t.Fatalf("run-command belongs under a service, not the main menu: %q", v)
 	}
 }
 

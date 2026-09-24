@@ -39,15 +39,15 @@ type Deps struct {
 	NewEphemeral  func(session profiles.SSOSession, accountID, roleName, region string) (idp awsx.IdentityProvider, ec2 awsx.EC2Lister, ssm awsx.SSMLister, rds awsx.RDSLister, containers awsx.ContainerLister, ecs awsx.ECSLister, sess awsx.Sessioner, resolvedRegion string, cleanup func(), err error)
 }
 
-// flow is which main-menu action is in progress. It decides how the shared
-// instance-picker screen is labelled and where the flow goes next.
+// flow is which action is in progress. It decides where the flow goes next
+// and how a finished or failed session is reported.
 type flow int
 
 const (
-	flowSession flow = iota // Acessar EC2
-	flowTunnel              // Acessar banco/serviço (túnel)
-	flowExec                // Rodar comando
-	flowECSExec             // Rodar comando em container (ECS)
+	flowSession flow = iota // EC2 > Sessão na instância
+	flowTunnel              // EC2 > Túnel para banco RDS
+	flowExec                // EC2 > Comando em container Docker
+	flowECSExec             // ECS
 )
 
 type rootModel struct {
@@ -61,6 +61,7 @@ type rootModel struct {
 	regionScreen    regionScreen
 	menuScreen       menuScreen
 	instancesScreen  instancesScreen
+	ec2ActionScreen  ec2ActionScreen
 	rdsScreen        rdsScreen
 	containersScreen containersScreen
 	ecsClusterScreen ecsClusterScreen
@@ -183,16 +184,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.instancesScreen = newInstancesScreen(msg.targets)
 		m.instancesScreen, _, _ = m.instancesScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
-		switch m.flow {
-		case flowTunnel:
-			m.instancesScreen.list.Title = "Escolha a instância que fará o túnel (bastion SSM)"
-			m.current = screenTunnelInstance
-		case flowExec:
-			m.instancesScreen.list.Title = "Escolha a instância que roda o container"
-			m.current = screenExecInstance
-		default:
-			m.current = screenInstances
-		}
+		m.current = screenInstances
 		return m, nil
 	case rdsMsg:
 		dbs := filterDBsByVPC(msg.dbs, m.tunnelInstance.VpcID)
@@ -201,7 +193,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				"Nenhum banco alcançável a partir dessa instância.",
 				fmt.Sprintf("Não há RDS na mesma VPC (%s) da instância escolhida, ou falta permissão rds:DescribeDBInstances.", m.tunnelInstance.VpcID),
 				[]errorAction{
-					{label: "Escolher outra instância", next: screenTunnelInstance},
+					{label: "Escolher outra instância", next: screenInstances},
 					{label: "Voltar para o menu principal", next: screenMenu},
 					{label: "Sair", next: screenQuit},
 				},
@@ -219,7 +211,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Sprintf("`docker ps` não retornou nada em %s (%s). A instância pode não rodar containers, ou o Docker pode estar parado.",
 					awsx.DisplayName(m.execInstance.Instance), m.execInstance.ID),
 				[]errorAction{
-					{label: "Escolher outra instância", next: screenExecInstance},
+					{label: "Escolher outra instância", next: screenInstances},
 					{label: "Voltar para o menu principal", next: screenMenu},
 					{label: "Sair", next: screenQuit},
 				},
@@ -316,7 +308,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = "Verificando sessão..."
 		return m, loadIdentityCmd(m.idp, m.region)
 	case sessionEndedMsg:
-		back := errorAction{label: "Voltar para as instâncias", next: screenInstances}
+		back := errorAction{label: "Voltar para a instância", next: screenEC2Action}
 		switch m.flow {
 		case flowTunnel:
 			back = errorAction{label: "Voltar para os bancos", next: screenRDS}
@@ -373,7 +365,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.commandScreen = newManualCommandScreen(awsx.DisplayName(m.execInstance.Instance))
 			return m.toError("Não foi possível listar os containers.", detail, []errorAction{
 				{label: "Digitar o comando à mão", next: screenCommand},
-				{label: "Escolher outra instância", next: screenExecInstance},
+				{label: "Escolher outra instância", next: screenInstances},
 				{label: "Voltar para o menu principal", next: screenMenu},
 				{label: "Sair", next: screenQuit},
 			}), nil
@@ -462,17 +454,6 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.current = screenChecking
 			m.loading = "Carregando instâncias..."
 			return m, loadTargetsCmd(m.ec2, m.ssm)
-		case screenRDS:
-			m.flow = flowTunnel
-			m.current = screenChecking
-			m.loading = "Carregando instâncias..."
-			return m, loadTargetsCmd(m.ec2, m.ssm)
-		case screenExecInstance:
-			m.flow = flowExec
-			m.execContainer = awsx.Container{}
-			m.current = screenChecking
-			m.loading = "Carregando instâncias..."
-			return m, loadTargetsCmd(m.ec2, m.ssm)
 		case screenECSCluster:
 			m.flow = flowECSExec
 			m.current = screenChecking
@@ -488,31 +469,57 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case screenInstances:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.instancesScreen.list.SettingFilter() {
+			m.current = screenMenu
+			return m, nil
+		}
 		var sel *awsx.Target
 		var cmd tea.Cmd
 		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
 		if sel != nil {
-			id := sel.ID
-			name := awsx.DisplayName(sel.Instance)
-			m.connectingName, m.connectingID = name, id
-			m.deps.Log.Debug("opening ssm session: instance=%s (%s) region=%s", name, id, m.region)
-			return m, execWithCapture(sessionExec(m.session, id, name))
+			m.ec2ActionScreen = newEC2ActionScreen(*sel)
+			m.current = screenEC2Action
 		}
 		return m, cmd
 
-	case screenTunnelInstance:
-		var sel *awsx.Target
-		var cmd tea.Cmd
-		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
-		if sel != nil {
-			m.tunnelInstance = *sel
+	case screenEC2Action:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc {
+			m.current = screenInstances
+			return m, nil
+		}
+		var action ec2Action
+		m.ec2ActionScreen, action = m.ec2ActionScreen.Update(msg)
+		t := m.ec2ActionScreen.target
+		switch action {
+		case ec2ActionSession:
+			m.flow = flowSession
+			name := awsx.DisplayName(t.Instance)
+			m.connectingName, m.connectingID = name, t.ID
+			m.deps.Log.Debug("opening ssm session: instance=%s (%s) region=%s", name, t.ID, m.region)
+			return m, execWithCapture(sessionExec(m.session, t.ID, name))
+		case ec2ActionExec:
+			m.flow = flowExec
+			m.execInstance = t
+			// Clear any container from a previous round so a listing failure
+			// is recognised as such.
+			m.execContainer = awsx.Container{}
+			m.current = screenChecking
+			m.loading = "Carregando containers..."
+			return m, loadContainersCmd(m.containers, t.ID)
+		case ec2ActionTunnel:
+			m.flow = flowTunnel
+			m.tunnelInstance = t
 			m.current = screenChecking
 			m.loading = "Carregando bancos..."
 			return m, loadRDSCmd(m.rds)
 		}
-		return m, cmd
+		return m, nil
 
 	case screenRDS:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.rdsScreen.list.SettingFilter() {
+			m.current = screenEC2Action
+			return m, nil
+		}
 		var sel *awsx.RDSInstance
 		var cmd tea.Cmd
 		m.rdsScreen, sel, cmd = m.rdsScreen.Update(msg)
@@ -521,24 +528,9 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, cmd
 
-	case screenExecInstance:
-		var sel *awsx.Target
-		var cmd tea.Cmd
-		m.instancesScreen, sel, cmd = m.instancesScreen.Update(msg)
-		if sel != nil {
-			m.execInstance = *sel
-			// Clear any container from a previous round so a listing failure
-			// is recognised as such.
-			m.execContainer = awsx.Container{}
-			m.current = screenChecking
-			m.loading = "Carregando containers..."
-			return m, loadContainersCmd(m.containers, sel.ID)
-		}
-		return m, cmd
-
 	case screenContainers:
 		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.containersScreen.list.SettingFilter() {
-			m.current = screenExecInstance
+			m.current = screenEC2Action
 			return m, nil
 		}
 		var sel *awsx.Container
@@ -552,6 +544,10 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case screenECSCluster:
+		if km, ok := msg.(tea.KeyMsg); ok && km.Type == tea.KeyEsc && !m.ecsClusterScreen.list.SettingFilter() {
+			m.current = screenMenu
+			return m, nil
+		}
 		var sel *string
 		var cmd tea.Cmd
 		m.ecsClusterScreen, sel, cmd = m.ecsClusterScreen.Update(msg)
@@ -876,9 +872,9 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 	case screenInstances:
 		m.current = screenInstances
 		return m, loadTargetsCmd(m.ec2, m.ssm)
-	case screenExecInstance:
-		m.current = screenExecInstance
-		return m, loadTargetsCmd(m.ec2, m.ssm)
+	case screenEC2Action:
+		m.current = screenEC2Action
+		return m, nil
 	case screenContainers:
 		m.current = screenContainers
 		return m, nil
@@ -948,8 +944,10 @@ func (m rootModel) View() string {
 		return styleFaint.Render("Abrindo autenticação AWS...")
 	case screenMenu:
 		return m.menuScreen.View()
-	case screenInstances, screenTunnelInstance, screenExecInstance:
+	case screenInstances:
 		return m.instancesScreen.View()
+	case screenEC2Action:
+		return m.ec2ActionScreen.View()
 	case screenRDS:
 		return m.rdsScreen.View()
 	case screenContainers:

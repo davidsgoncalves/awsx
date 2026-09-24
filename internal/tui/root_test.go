@@ -282,34 +282,60 @@ func TestRoot_ProfileRegionIsRemembered(t *testing.T) {
 	}
 }
 
-func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
-	m := NewRoot(fakeDeps())
+// menuToEC2Action drives a fresh model through EC2 and the instance list to
+// the action menu of instance i-1.
+func menuToEC2Action(t *testing.T, d Deps) rootModel {
+	t.Helper()
+	m := NewRoot(d)
 	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile
 	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
-	if m.current != screenMenu {
-		t.Fatalf("current = %v, want screenMenu", m.current)
-	}
-
-	// menu: move to "Acessar banco/serviço (túnel)" and enter
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.flow != flowTunnel {
-		t.Fatalf("flow = %v, want flowTunnel", m.flow)
-	}
-
-	// instances arrive first -> tunnel instance picker
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // EC2
 	m = drive(m, targetsMsg{targets: []awsx.Target{
 		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running", VpcID: "vpc-1"}, SSMOnline: true},
 	}})
-	if m.current != screenTunnelInstance {
-		t.Fatalf("current = %v, want screenTunnelInstance", m.current)
+	if m.current != screenInstances {
+		t.Fatalf("current = %v, want screenInstances", m.current)
 	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // pick instance
+	if m.current != screenEC2Action {
+		t.Fatalf("current = %v, want screenEC2Action", m.current)
+	}
+	return m
+}
 
-	// pick instance -> load databases (checking)
+func TestRoot_EC2Flow_SessionActionOpensSession(t *testing.T) {
+	m := menuToEC2Action(t, fakeDeps())
+	next, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("expected an exec command for the session")
+	}
+	if got := next.(rootModel); got.flow != flowSession || got.connectingID != "i-1" {
+		t.Fatalf("flow = %v, connecting = %q", got.flow, got.connectingID)
+	}
+}
+
+func TestRoot_EC2Flow_EscWalksBackOneLevel(t *testing.T) {
+	m := menuToEC2Action(t, fakeDeps())
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenInstances {
+		t.Fatalf("current = %v, want screenInstances", m.current)
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+}
+
+func TestRoot_TunnelFlow_InstanceToRDS(t *testing.T) {
+	m := menuToEC2Action(t, fakeDeps())
+
+	// Túnel para banco RDS is the third action.
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
-	if m.current != screenChecking || m.tunnelInstance.ID != "i-1" {
-		t.Fatalf("after instance pick current=%v instance=%q", m.current, m.tunnelInstance.ID)
+	if m.flow != flowTunnel || m.current != screenChecking || m.tunnelInstance.ID != "i-1" {
+		t.Fatalf("flow=%v current=%v instance=%q", m.flow, m.current, m.tunnelInstance.ID)
 	}
 
 	// rds list arrives -> filtered to same VPC (vpc-1) -> rds picker
@@ -322,6 +348,11 @@ func TestRoot_TunnelFlow_MenuToRDSToInstance(t *testing.T) {
 	}
 	if len(m.rdsScreen.list.Items()) != 1 {
 		t.Fatalf("expected only same-VPC db (1), got %d", len(m.rdsScreen.list.Items()))
+	}
+
+	// esc goes back to the instance's actions
+	if back := drive(m, tea.KeyMsg{Type: tea.KeyEsc}); back.current != screenEC2Action {
+		t.Fatalf("esc from databases: current = %v, want screenEC2Action", back.current)
 	}
 
 	// pick db -> a port-forward exec command is returned
@@ -379,17 +410,12 @@ func (fakeContainers) Containers(context.Context, string) ([]awsx.Container, err
 	}, nil
 }
 
-// menuToRunCommand drives a fresh model to the instance picker of the
-// "Rodar comando" flow.
+// menuToRunCommand drives a fresh model through EC2 > instance >
+// "Comando em container Docker", leaving it loading the containers of i-1.
 func menuToRunCommand(t *testing.T, d Deps) rootModel {
 	t.Helper()
-	m := NewRoot(d)
-	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select profile
-	m = drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
-
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // túnel
-	m = drive(m, tea.KeyMsg{Type: tea.KeyDown}) // Rodar comando
+	m := menuToEC2Action(t, d)
+	m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.flow != flowExec {
 		t.Fatalf("flow = %v, want flowExec", m.flow)
@@ -400,16 +426,7 @@ func menuToRunCommand(t *testing.T, d Deps) rootModel {
 func TestRoot_ExecFlow_InstanceToContainerToCommand(t *testing.T) {
 	m := menuToRunCommand(t, fakeDeps())
 
-	// instances arrive -> exec instance picker
-	m = drive(m, targetsMsg{targets: []awsx.Target{
-		{Instance: awsx.Instance{ID: "i-1", Name: "api", State: "running", VpcID: "vpc-1"}, SSMOnline: true},
-	}})
-	if m.current != screenExecInstance {
-		t.Fatalf("current = %v, want screenExecInstance", m.current)
-	}
-
-	// pick instance -> loading containers
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+	// action picked -> loading containers
 	if m.current != screenChecking || m.execInstance.ID != "i-1" {
 		t.Fatalf("current=%v instance=%q", m.current, m.execInstance.ID)
 	}
@@ -448,10 +465,6 @@ func TestRoot_ExecFlow_RemembersCommand(t *testing.T) {
 	d.State = st
 
 	m := menuToRunCommand(t, d)
-	m = drive(m, targetsMsg{targets: []awsx.Target{
-		{Instance: awsx.Instance{ID: "i-1", Name: "api", VpcID: "vpc-1"}, SSMOnline: true},
-	}})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = drive(m, containersMsg{containers: []awsx.Container{
 		{ID: "abc", Name: "myapp-web-1", Service: "web"},
 	}})
@@ -482,16 +495,16 @@ func TestRoot_ExecFlow_NoContainersShowsGuidance(t *testing.T) {
 
 func TestRoot_ExecFlow_EscFromCommandGoesBackToContainers(t *testing.T) {
 	m := menuToRunCommand(t, fakeDeps())
-	m = drive(m, targetsMsg{targets: []awsx.Target{
-		{Instance: awsx.Instance{ID: "i-1", Name: "api", VpcID: "vpc-1"}, SSMOnline: true},
-	}})
-	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	m = drive(m, containersMsg{containers: []awsx.Container{{ID: "abc", Name: "myapp-web-1", Service: "web"}}})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
 	if m.current != screenContainers {
 		t.Fatalf("current = %v, want screenContainers", m.current)
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEsc})
+	if m.current != screenEC2Action {
+		t.Fatalf("current = %v, want screenEC2Action", m.current)
 	}
 }
 
@@ -547,7 +560,7 @@ func TestRoot_ExecFlow_ManualFallbackOpensFullLineCommandScreen(t *testing.T) {
 // menuToECS walks the main menu to the ECS action.
 func menuToECS(t *testing.T) rootModel {
 	t.Helper()
-	return menuAt(t, 3)
+	return menuAt(t, 1)
 }
 
 func TestRoot_ECSFlow_SingleClusterSkipsPicker(t *testing.T) {
@@ -688,7 +701,7 @@ func ecsTasksFixture() []awsx.ECSTask {
 }
 
 func TestRoot_UpdateFlow_MenuOpensTheUpdateScreen(t *testing.T) {
-	m := menuAt(t, 4)
+	m := menuAt(t, 2)
 	if m.current != screenUpdate {
 		t.Fatalf("current = %v, want screenUpdate", m.current)
 	}
@@ -698,7 +711,7 @@ func TestRoot_UpdateFlow_MenuOpensTheUpdateScreen(t *testing.T) {
 }
 
 func TestRoot_UpdateFlow_ResultThenEscGoesBackToMenu(t *testing.T) {
-	m := menuAt(t, 4)
+	m := menuAt(t, 2)
 	m = drive(m, updateCheckMsg{latest: "v99.0.0", path: "/usr/local/bin/awsx"})
 	if m.updateScreen.stage != updateFound {
 		t.Fatalf("stage = %v, want updateFound", m.updateScreen.stage)
@@ -710,7 +723,7 @@ func TestRoot_UpdateFlow_ResultThenEscGoesBackToMenu(t *testing.T) {
 }
 
 func TestRoot_UpdateFlow_FailureIsReported(t *testing.T) {
-	m := menuAt(t, 4)
+	m := menuAt(t, 2)
 	m = drive(m, updateCheckMsg{latest: "v99.0.0", path: "/usr/local/bin/awsx"})
 	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 	if m.updateScreen.stage != updateApplying {

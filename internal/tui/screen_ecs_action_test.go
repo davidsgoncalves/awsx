@@ -47,7 +47,7 @@ func TestECSActionScreen_FargateHasNoHost(t *testing.T) {
 	if len(s.actions) != 2 {
 		t.Fatalf("actions = %v, want command and shell only", s.actions)
 	}
-	if strings.Contains(s.View(), "Acessar host") {
+	if strings.Contains(s.View(), "Sessão na instância") {
 		t.Fatalf("fargate task offers a host session: %q", s.View())
 	}
 }

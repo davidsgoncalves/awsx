@@ -42,7 +42,7 @@ func ecsActionLabel(a ecsAction) string {
 	case ecsActionShell:
 		return "Shell no container"
 	case ecsActionHost:
-		return "Acessar host (SSM)"
+		return "Sessão na instância (SSM)"
 	}
 	return ""
 }

@@ -10,9 +10,7 @@ import (
 )
 
 var menuActions = []string{
-	"Acessar EC2",
-	"Acessar banco/serviço (túnel)",
-	"Rodar comando",
+	"EC2",
 	"ECS",
 	"Atualizar AWSX",
 	"Sair",
@@ -48,12 +46,8 @@ func (m menuScreen) Update(msg tea.Msg) (menuScreen, screen) {
 		case 0:
 			return m, screenInstances
 		case 1:
-			return m, screenRDS
-		case 2:
-			return m, screenExecInstance
-		case 3:
 			return m, screenECSCluster
-		case 4:
+		case 2:
 			return m, screenUpdate
 		default:
 			return m, screenQuit
@@ -78,6 +72,7 @@ func (m menuScreen) View() string {
 		}
 		b.WriteString(cursor + a + "\n")
 	}
+	b.WriteString("\n" + styleFaint.Render("enter confirma") + "\n")
 	return b.String()
 }
 
