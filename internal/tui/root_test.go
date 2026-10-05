@@ -749,3 +749,106 @@ func menuAt(t *testing.T, i int) rootModel {
 	}
 	return drive(m, tea.KeyMsg{Type: tea.KeyEnter})
 }
+
+func TestRoot_ResumesLastProfileAndRegion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	st.SetLast(state.Login{Profile: "prod", Region: "sa-east-1"})
+	d := fakeDeps()
+	d.State = st
+	var gotRegion string
+	d.NewClients = func(_ context.Context, _, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, string, error) {
+		gotRegion = region
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, region, nil
+	}
+
+	m := NewRoot(d)
+	if m.current != screenChecking || m.Init() == nil {
+		t.Fatalf("current = %v, want screenChecking with an init command", m.current)
+	}
+	if gotRegion != "sa-east-1" {
+		t.Fatalf("region = %q, want sa-east-1", gotRegion)
+	}
+}
+
+func TestRoot_UnknownLastProfileStartsAtSelection(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	st.SetLast(state.Login{Profile: "removed", Region: "sa-east-1"})
+	d := fakeDeps()
+	d.State = st
+
+	m := NewRoot(d)
+	if m.current != screenProfiles || m.Init() != nil {
+		t.Fatalf("current = %v, want screenProfiles without an init command", m.current)
+	}
+}
+
+func TestRoot_ResumesLastSSOLoginSkippingPickers(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	st.SetLast(state.Login{SSOSession: "vakinha", AccountID: "111111111111", RoleName: "SystemAdministrator", Region: "sa-east-1"})
+	d := ssoDeps(func() {})
+	d.State = st
+	var gotAccount, gotRole, gotRegion string
+	d.NewEphemeral = func(_ profiles.SSOSession, account, role, region string) (awsx.IdentityProvider, awsx.EC2Lister, awsx.SSMLister, awsx.RDSLister, awsx.ContainerLister, awsx.ECSLister, awsx.Sessioner, string, func(), error) {
+		gotAccount, gotRole, gotRegion = account, role, region
+		return fakeIDP{}, fakeEC2{}, fakeSSM{}, fakeRDS{}, fakeContainers{}, fakeECS{}, nil, region, func() {}, nil
+	}
+
+	m := NewRoot(d)
+	if !m.inSSOFlow || m.current != screenChecking {
+		t.Fatalf("current = %v inSSO = %v, want checking in the SSO flow", m.current, m.inSSOFlow)
+	}
+	m = drive(m, discovererReadyMsg{d: fakeDiscoverer{}})
+	if gotAccount != "111111111111" || gotRole != "SystemAdministrator" || gotRegion != "sa-east-1" {
+		t.Fatalf("ephemeral got account=%q role=%q region=%q", gotAccount, gotRole, gotRegion)
+	}
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "111111111111"}, region: "sa-east-1"})
+	if m.current != screenMenu {
+		t.Fatalf("current = %v, want screenMenu", m.current)
+	}
+}
+
+func TestRoot_IdentityRemembersLogin(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	d := fakeDeps()
+	d.State = st
+
+	m := NewRoot(d)
+	m = drive(m, tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter}) // select prod
+	drive(m, identityMsg{id: awsx.Identity{Account: "1"}, region: "us-east-1"})
+
+	if l := state.Load().Last; l == nil || l.Profile != "prod" || l.Region != "us-east-1" {
+		t.Fatalf("last = %+v, want prod in us-east-1", l)
+	}
+}
+
+func TestRoot_SwitchProfileClearsLastAndCleansUp(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	st := state.Load()
+	st.SetLast(state.Login{SSOSession: "vakinha", AccountID: "111111111111", RoleName: "SystemAdministrator", Region: "sa-east-1"})
+	cleaned := false
+	d := ssoDeps(func() { cleaned = true })
+	d.State = st
+
+	m := NewRoot(d)
+	m = drive(m, discovererReadyMsg{d: fakeDiscoverer{}})
+	m = drive(m, identityMsg{id: awsx.Identity{Account: "111111111111"}, region: "sa-east-1"})
+	for range 3 { // Trocar perfil
+		m = drive(m, tea.KeyMsg{Type: tea.KeyDown})
+	}
+	m = drive(m, tea.KeyMsg{Type: tea.KeyEnter})
+
+	if m.current != screenProfiles {
+		t.Fatalf("current = %v, want screenProfiles", m.current)
+	}
+	if !cleaned {
+		t.Fatal("ephemeral credentials were not cleaned up")
+	}
+	if state.Load().Last != nil {
+		t.Fatal("expected last login cleared")
+	}
+}

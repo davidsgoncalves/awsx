@@ -108,3 +108,25 @@ func TestContainerKeyDoesNotCollideWithRegionKeys(t *testing.T) {
 		t.Fatal("container and profile keys must not collide")
 	}
 }
+
+func TestLastLogin_RoundTripAndClear(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	s := Load()
+	s.SetLast(Login{SSOSession: "vakinha", AccountID: "111", RoleName: "Admin", Region: "sa-east-1"})
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	got := Load().Last
+	if got == nil || !got.IsSSO() || got.AccountID != "111" || got.Region != "sa-east-1" {
+		t.Fatalf("last = %+v", got)
+	}
+
+	s.ClearLast()
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+	if Load().Last != nil {
+		t.Fatal("expected last login cleared")
+	}
+}

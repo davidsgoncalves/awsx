@@ -73,7 +73,12 @@ awsx
 
 - Arrow keys to move, `Enter` to select, type to filter, `Esc` to go back one
   level, `Ctrl+C` to quit.
-- When an SSM session ends you return to the menu.
+- AWSX reopens the last profile (or SSO session, account and role) in the
+  region it was used in. **Trocar perfil** in the menu forgets it and goes back
+  to the selection list. A profile or SSO session removed from `~/.aws/config`
+  is skipped.
+- When a session, tunnel or command ends, its output stays on screen until you
+  press `Enter`, then you return to AWSX.
 - Debug logging (never includes credentials or tokens):
 
   ```sh

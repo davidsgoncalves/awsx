@@ -29,7 +29,13 @@ func TestMenuScreen_SelectsEachAction(t *testing.T) {
 		t.Fatalf("next = %v, want screenUpdate", next)
 	}
 
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = Sair
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 3 = Trocar perfil
+	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if next != screenProfiles {
+		t.Fatalf("next = %v, want screenProfiles", next)
+	}
+
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor 4 = Sair
 	_, next = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if next != screenQuit {
 		t.Fatalf("next = %v, want screenQuit", next)

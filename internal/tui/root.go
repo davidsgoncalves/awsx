@@ -111,6 +111,12 @@ type rootModel struct {
 	connectingName string
 	connectingID   string
 
+	// resume is the saved login being reopened at startup. It is cleared once
+	// the SSO discoverer is ready, so later logins go through the pickers.
+	resume *state.Login
+	// initCmd is the command that resumes the saved login, returned by Init.
+	initCmd tea.Cmd
+
 	loading       string
 	width, height int
 	quitting      bool
@@ -136,7 +142,8 @@ func (m rootModel) savedRegion(key string) string {
 }
 
 // NewRoot builds the initial model. Missing deps route straight to an error
-// screen; otherwise the selection screen (profiles + SSO sessions) is shown.
+// screen. When the last login still exists in the AWS config it is reopened;
+// otherwise the selection screen (profiles + SSO sessions) is shown.
 func NewRoot(d Deps) rootModel {
 	m := rootModel{deps: d, loading: "Carregando..."}
 	m.depsScreen = newDepsScreen(d.Checks)
@@ -153,10 +160,40 @@ func NewRoot(d Deps) rootModel {
 	}
 	m.current = screenProfiles
 	m.selectionScreen = newSelectionScreen(d.Profiles, d.SSOSessions)
+	return m.resumeLast()
+}
+
+// resumeLast starts the saved login, if any, when its profile or SSO session is
+// still configured.
+func (m rootModel) resumeLast() rootModel {
+	if m.deps.State == nil || m.deps.State.Last == nil {
+		return m
+	}
+	last := *m.deps.State.Last
+	if last.IsSSO() {
+		for _, s := range m.deps.SSOSessions {
+			if s.Name == last.SSOSession {
+				m.resume = &last
+				next, cmd := m.startSSOSession(s)
+				resumed := next.(rootModel)
+				resumed.initCmd = cmd
+				return resumed
+			}
+		}
+		return m
+	}
+	for _, p := range m.deps.Profiles {
+		if p.Name == last.Profile {
+			next, cmd := m.startChecking(p, last.Region)
+			resumed := next.(rootModel)
+			resumed.initCmd = cmd
+			return resumed
+		}
+	}
 	return m
 }
 
-func (m rootModel) Init() tea.Cmd { return nil }
+func (m rootModel) Init() tea.Cmd { return m.initCmd }
 
 func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -168,6 +205,7 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case identityMsg:
 		m.region = msg.region
+		m.rememberLogin()
 		m.menuScreen = newMenuScreen(m.displayProfile(), msg.region, msg.id)
 		m.current = screenMenu
 		return m, nil
@@ -279,6 +317,11 @@ func (m rootModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, loginCmd(m.deps.NewSSOLogin(m.ssoSession))
 	case discovererReadyMsg:
 		m.discoverer = msg.d
+		if r := m.resume; r != nil {
+			m.resume = nil
+			m.accountID, m.roleName = r.AccountID, r.RoleName
+			return m.startEphemeral(r.Region)
+		}
 		m.current = screenChecking
 		m.loading = "Carregando contas..."
 		return m, loadAccountsCmd(msg.d)
@@ -463,6 +506,8 @@ func (m rootModel) routeToScreen(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateScreen = newUpdateScreen(version.Current())
 			m.current = screenUpdate
 			return m, checkUpdateCmd()
+		case screenProfiles:
+			return m.switchProfile(), nil
 		case screenQuit:
 			return m.quit()
 		}
@@ -862,8 +907,15 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 		return m, loadIdentityCmd(m.idp, m.region)
 	case screenProfiles:
 		m.current = screenProfiles
+		m.selectionScreen, _, _, _ = m.selectionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 		return m, nil
 	case screenAccounts:
+		// A resumed SSO login skips the account list, so it may not be loaded.
+		if len(m.accountScreen.list.Items()) == 0 && m.discoverer != nil {
+			m.current = screenChecking
+			m.loading = "Carregando contas..."
+			return m, loadAccountsCmd(m.discoverer)
+		}
 		m.current = screenAccounts
 		return m, nil
 	case screenRDS:
@@ -902,6 +954,44 @@ func (m rootModel) applyErrorNext(next screen) (tea.Model, tea.Cmd) {
 func (m rootModel) toError(title, detail string, actions []errorAction) rootModel {
 	m.errorScreen = newErrorScreen(title, detail, actions)
 	m.current = screenError
+	return m
+}
+
+// rememberLogin saves the login that just resolved its identity, so the next
+// run reopens it.
+func (m rootModel) rememberLogin() {
+	if m.deps.State == nil {
+		return
+	}
+	l := state.Login{Profile: m.profile, Region: m.region}
+	if m.inSSOFlow {
+		l = state.Login{SSOSession: m.ssoSession.Name, AccountID: m.accountID, RoleName: m.roleName, Region: m.region}
+	}
+	m.deps.State.SetLast(l)
+	if err := m.deps.State.Save(); err != nil {
+		m.deps.Log.Error("could not save state: %v", err)
+	}
+}
+
+// switchProfile forgets the saved login, drops any ephemeral credentials and
+// returns to the selection screen.
+func (m rootModel) switchProfile() rootModel {
+	if m.deps.State != nil {
+		m.deps.State.ClearLast()
+		if err := m.deps.State.Save(); err != nil {
+			m.deps.Log.Error("could not save state: %v", err)
+		}
+	}
+	if m.cleanup != nil {
+		m.cleanup()
+		m.cleanup = nil
+	}
+	m.inSSOFlow = false
+	m.discoverer = nil
+	m.login, m.session = nil, nil
+	m.accountScreen = accountScreen{}
+	m.current = screenProfiles
+	m.selectionScreen, _, _, _ = m.selectionScreen.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 	return m
 }
 

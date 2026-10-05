@@ -244,7 +244,7 @@ func brewUpgradeCmd() tea.Cmd {
 	cmd := brewUpgradeExec()
 	buf := &strings.Builder{}
 	cmd.Stderr = io.MultiWriter(cmd.Stderr, buf)
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.Exec(pauseAfter(cmd), func(err error) tea.Msg {
 		if err != nil {
 			if out := strings.TrimSpace(buf.String()); out != "" {
 				return updateDoneMsg{err: fmt.Errorf("%w: %s", err, out)}

@@ -1,6 +1,6 @@
-// Package state persists small, non-sensitive user preferences between runs —
-// currently the last region chosen per profile or SSO account/role. It stores
-// no credentials or tokens.
+// Package state persists small, non-sensitive user preferences between runs:
+// the last region chosen per profile or SSO account/role, the last login used,
+// and recent commands per container. It stores no credentials or tokens.
 package state
 
 import (
@@ -16,7 +16,29 @@ import (
 type State struct {
 	Regions  map[string]string   `json:"regions"`
 	Commands map[string][]string `json:"commands"`
+	Last     *Login              `json:"last,omitempty"`
 }
+
+// Login is a profile, or an SSO session/account/role, together with the region
+// it was used in. SSOSession is empty for the profile flow.
+type Login struct {
+	Profile    string `json:"profile,omitempty"`
+	SSOSession string `json:"sso_session,omitempty"`
+	AccountID  string `json:"account_id,omitempty"`
+	RoleName   string `json:"role_name,omitempty"`
+	Region     string `json:"region"`
+}
+
+// IsSSO reports whether the login went through an SSO session.
+func (l Login) IsSSO() bool { return l.SSOSession != "" }
+
+// SetLast records the login to resume on the next run (in memory; call Save to
+// persist).
+func (s *State) SetLast(l Login) { s.Last = &l }
+
+// ClearLast forgets the login to resume, so the next run starts at the
+// selection screen.
+func (s *State) ClearLast() { s.Last = nil }
 
 // Path is the state file location (alongside the log).
 func Path() string { return filepath.Join(logging.Dir(), "state.json") }

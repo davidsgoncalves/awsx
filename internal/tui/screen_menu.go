@@ -13,6 +13,7 @@ var menuActions = []string{
 	"EC2",
 	"ECS",
 	"Atualizar AWSX",
+	"Trocar perfil",
 	"Sair",
 }
 
@@ -49,6 +50,8 @@ func (m menuScreen) Update(msg tea.Msg) (menuScreen, screen) {
 			return m, screenECSCluster
 		case 2:
 			return m, screenUpdate
+		case 3:
+			return m, screenProfiles
 		default:
 			return m, screenQuit
 		}

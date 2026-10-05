@@ -14,7 +14,7 @@ import (
 	"github.com/davidsgoncalves/awsx/internal/update"
 )
 
-// execWithCapture runs cmd via tea.ExecProcess, capturing its stderr (alongside
+// execWithCapture runs cmd via tea.Exec, capturing its stderr (alongside
 // the terminal) so a failure message survives the TUI redraw and reaches the
 // error screen and log.
 func execWithCapture(cmd *exec.Cmd) tea.Cmd {
@@ -24,9 +24,78 @@ func execWithCapture(cmd *exec.Cmd) tea.Cmd {
 	} else {
 		cmd.Stderr = buf
 	}
-	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+	return tea.Exec(pauseAfter(cmd), func(err error) tea.Msg {
 		return sessionEndedMsg{err: err, stderr: strings.TrimSpace(buf.String())}
 	})
+}
+
+// finishedPrompt is printed when the child process exits, before the TUI takes
+// the terminal back and the alternate screen hides the output.
+const finishedPrompt = "\nFinalizado. Aperte enter para fechar."
+
+// pausedCmd runs a child process and then waits for enter, so its last lines
+// stay readable until the user dismisses them.
+type pausedCmd struct {
+	cmd *exec.Cmd
+	in  io.Reader
+	out io.Writer
+}
+
+// pauseAfter wraps cmd for tea.Exec. Streams already set on cmd are kept.
+func pauseAfter(cmd *exec.Cmd) *pausedCmd {
+	return &pausedCmd{cmd: cmd, in: cmd.Stdin, out: cmd.Stdout}
+}
+
+func (p *pausedCmd) SetStdin(r io.Reader) {
+	if p.cmd.Stdin == nil {
+		p.cmd.Stdin = r
+	}
+	if p.in == nil {
+		p.in = r
+	}
+}
+
+func (p *pausedCmd) SetStdout(w io.Writer) {
+	if p.cmd.Stdout == nil {
+		p.cmd.Stdout = w
+	}
+	if p.out == nil {
+		p.out = w
+	}
+}
+
+func (p *pausedCmd) SetStderr(w io.Writer) {
+	if p.cmd.Stderr == nil {
+		p.cmd.Stderr = w
+	}
+}
+
+// Run runs the child process, then blocks until enter. The child's error is
+// returned whether or not it succeeded.
+func (p *pausedCmd) Run() error {
+	err := p.cmd.Run()
+	if p.out != nil {
+		_, _ = fmt.Fprintln(p.out, finishedPrompt)
+	}
+	if p.in != nil {
+		waitForEnter(p.in)
+	}
+	return err
+}
+
+// waitForEnter reads until a line break or EOF. Both CR and LF count, since a
+// child such as session-manager-plugin can leave the terminal in raw mode.
+func waitForEnter(r io.Reader) {
+	b := make([]byte, 1)
+	for {
+		n, err := r.Read(b)
+		if n == 1 && (b[0] == '\n' || b[0] == '\r') {
+			return
+		}
+		if err != nil {
+			return
+		}
+	}
 }
 
 // sessionExec returns an *exec.Cmd that, when run by tea.ExecProcess, hands the

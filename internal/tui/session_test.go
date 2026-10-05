@@ -3,8 +3,10 @@ package tui
 import (
 	"context"
 	"errors"
+	"io"
 	"os/exec"
 	"slices"
+	"strings"
 	"testing"
 
 	awsx "github.com/davidsgoncalves/awsx/internal/aws"
@@ -85,5 +87,35 @@ func TestLoadContainersCmd_ErrorBecomesErrMsg(t *testing.T) {
 	}
 	if !errors.Is(got.err, sentinel) {
 		t.Fatalf("err = %v, want %v", got.err, sentinel)
+	}
+}
+
+func TestPauseAfter_WaitsForEnterAndKeepsError(t *testing.T) {
+	// The child gets no stdin here: an io.Reader would be drained into it,
+	// unlike the terminal's *os.File in real use.
+	in := strings.NewReader("\rrest")
+	out := &strings.Builder{}
+	p := &pausedCmd{cmd: exec.Command("false"), in: in, out: out}
+
+	if err := p.Run(); err == nil {
+		t.Fatal("expected the child's error to be returned")
+	}
+	if !strings.Contains(out.String(), "Aperte enter para fechar") {
+		t.Fatalf("prompt not printed: %q", out.String())
+	}
+	if in.Len() != len("rest") {
+		t.Fatalf("expected input consumed up to the line break, %d bytes left", in.Len())
+	}
+}
+
+func TestPauseAfter_StopsAtFirstLineBreak(t *testing.T) {
+	in := strings.NewReader("\nrest")
+	p := &pausedCmd{cmd: exec.Command("true"), in: in, out: io.Discard}
+
+	if err := p.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if in.Len() != len("rest") {
+		t.Fatalf("read past the line break: %d bytes left", in.Len())
 	}
 }
